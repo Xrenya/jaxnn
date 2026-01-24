@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from flax import nnx
 
+from ._hub import load_model_config_from_hf, load_model_config_from_path
 from ._pretrained import PretrainedCfg
 from ._registry import is_model, model_entrypoint, split_model_name_tag
 
@@ -33,12 +34,13 @@ def create_model(
     cache_dir: Optional[Union[str, Path]] = None,
     **kwargs: Any,
 ) -> nnx.Module:
-    """Create a model.
+    """Create a Flax model, optionally loading pretrained weights.
+
 
     Lookup model's entrypoint function and pass relevant args to create a new model.
 
     Tip:
-        **kwargs will be passed through entrypoint fn to ``flaxm.models.build_model_with_cfg()``
+        **kwargs will be passed through entrypoint fn to ``jaxnn.models.build_model_with_cfg()``
         and then the model class __init__(). kwargs values set to None are pruned before passing.
 
     Args:
@@ -111,16 +113,18 @@ def create_model(
         raise RuntimeError('Unknown model (%s)' % model_name)
 
     create_fn = model_entrypoint(model_name)
-    with set_layer_config(scriptable=scriptable, exportable=exportable, no_jit=no_jit):
-        model = create_fn(
-            pretrained=pretrained,
-            pretrained_cfg=pretrained_cfg,
-            pretrained_cfg_overlay=pretrained_cfg_overlay,
-            cache_dir=cache_dir,
-            **kwargs,
-        )
+
+    model = create_fn(
+        pretrained=pretrained,
+        pretrained_cfg=pretrained_cfg,
+        pretrained_cfg_overlay=pretrained_cfg_overlay,
+        cache_dir=cache_dir,
+        **kwargs,
+    )
 
     if checkpoint_path:
-        load_checkpoint(model, checkpoint_path)
+        loaded_ok = load_checkpoint(model, checkpoint_path)
+        if not loaded_ok:
+            raise RuntimeError(f"Failed to load checkpoint from '{checkpoint_path}'")
 
     return model
