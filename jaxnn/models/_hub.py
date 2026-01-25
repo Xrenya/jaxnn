@@ -9,7 +9,6 @@ from typing import Any, Dict, Literal, List, Optional, Tuple, Union
 
 import torch
 from flax import nnx
-from flax import serialization
 import orbax.checkpoint as ocp
 from torch.hub import HASH_REGEX, download_url_to_file, urlparse
 
@@ -249,25 +248,16 @@ def save_for_hf(
     model: nnx.Module,
     save_directory: str,
     model_config: Optional[dict] = None,
-    model_args: Optional[dict] = None,
-    safe_serialization: bool = True,
+    model_args: Optional[dict] = None
 ):
     save_directory = Path(save_directory)
-    save_directory.mkdir(exist_ok=True, parents=True)
 
     # 1. Extract state
-    _, state = nnx.split(model)
+    graphdef, state = nnx.split(model)
 
     # 2. Save weights
-    if safe_serialization is False or safe_serialization == "both":
-        from safetensors.flax import save_file
-        safe_path = save_directory / HF_SAFE_WEIGHTS_NAME
-        save_file(serialization.to_state_dict(state), safe_path)
-    if safe_serialization is True or safe_serialization == "both":
-        serialized_bytes = serialization.to_bytes(state)
-        weights_path = save_directory / HF_WEIGHTS_NAME
-        with open(weights_path, "wb") as f:
-            f.write(serialized_bytes)
+    with ocp.StandardCheckpointer() as checkpointer:
+        checkpointer.save(save_directory / "state", state)
 
     # 3. Save config
     config_path = save_directory / HF_CONFIG_NAME
@@ -286,7 +276,6 @@ def push_to_hf_hub(
     model_card: Optional[dict] = None,
     model_args: Optional[dict] = None,
     task_name: str = "image-classification",
-    safe_serialization: Union[bool, Literal["both"]] = 'both',
 ):
     """
     Arguments:
@@ -316,7 +305,6 @@ def push_to_hf_hub(
             tmpdir,
             model_config=model_config,
             model_args=model_args,
-            safe_serialization=safe_serialization,
         )
 
         # Add readme if it does not exist
