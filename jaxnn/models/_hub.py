@@ -10,7 +10,7 @@ from typing import Any, Dict, Literal, List, Optional, Tuple, Union
 import torch
 from flax import nnx
 import orbax.checkpoint as ocp
-from torch.hub import HASH_REGEX, download_url_to_file, urlparse
+from torch.hub import HASH_REGEX, download_url_to_file, snapshot_download, urlparse
 
 try:
     from torch.hub import get_dir
@@ -35,7 +35,7 @@ _logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_cache_dir", "download_cached_file", "has_hf_hub", "hf_split",
-    "load_model_config_from_hf", "load_state_dict_from_hf", "save_for_hf",
+    "load_model_config_from_hf", "load_state_path_from_hf", "save_for_hf",
     "push_to_hf_hub",
 ]
 
@@ -167,23 +167,24 @@ def verify_hash(file_path: str, expected_hash: str) -> bool:
     return file_hash.startswith(expected_hash)
 
 
-def load_state_dict_from_hf(
+def load_state_path_from_hf(
     model_id: str,
-    filename: str = HF_WEIGHTS_NAME,
     cache_dir: Optional[Union[str, Path]] = None,
+    ignore_patterns: Optional[Union[None, List[str]]] = [
+        "*.md", ".gitattributes"
+    ],
 ):
     assert has_hf_hub(True)
     hf_model_id, hf_revision = hf_split(model_id)
-
-    cached_file = hf_hub_download(
+    snapshot_download(
         hf_model_id,
-        filename=filename,
+        repo_type="model",
         revision=hf_revision,
         cache_dir=cache_dir,
+        ignore_patterns=ignore_patterns,
     )
-    with open(cached_file, "rb") as f:
-        serialized_bytes = f.read()
-    return serialized_bytes
+    
+    return cache_dir
 
 
 def save_config_for_hf(
