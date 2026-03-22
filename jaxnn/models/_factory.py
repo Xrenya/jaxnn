@@ -75,6 +75,6 @@ def create_model(
     )
 
     if checkpoint_path:
-        model = load_checkpoint(model, checkpoint_path, pretrained_cfg)
+        model = load_checkpoint(model, checkpoint_path)
 
     return model

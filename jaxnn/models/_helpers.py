@@ -8,8 +8,7 @@ from pathlib import Path
 
 from flax import nnx
 
-from jaxnn.models._types import CheckpointFormat
-from jaxnn.models._builder import load_pretrained, load_orbax_state_dict, _apply_flat_state_dict
+from jaxnn.models._builder import load_orbax_state_dict, _apply_flat_state_dict
 
 _logger = logging.getLogger(__name__)
 
@@ -17,12 +16,9 @@ _logger = logging.getLogger(__name__)
 def load_checkpoint(
     model: nnx.Module,
     checkpoint_path: Union[str, Path],
-    pretrained_cfg: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None,
-    use_ema: bool = False,
     strict: bool = True,
     remap: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None,
     filter_fn: Optional[Callable[[str, Any], bool]] = None,
-    checkpoint_format: Union[str, CheckpointFormat] = CheckpointFormat.AUTO,
     verbose: bool = True,
 ) -> nnx.Module:
     """Load checkpoint weights into a model from a local path.
@@ -30,12 +26,9 @@ def load_checkpoint(
     Args:
         model: The model to load weights into
         checkpoint_path: Path to checkpoint directory (Orbax format)
-        pretrained_cfg: Optional pretrained config (unused when checkpoint_path is given)
-        use_ema: If True, use EMA weights if available
         strict: If True, require all model params to be in checkpoint
         remap: Dictionary or list of (old_name, new_name) tuples for remapping parameter names
         filter_fn: Function(param_name, param_value) -> bool to filter parameters
-        checkpoint_format: Format of checkpoint (currently only 'orbax' / 'auto')
         verbose: Print loading summary
 
     Returns:
@@ -46,7 +39,7 @@ def load_checkpoint(
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    state_dict, config = load_orbax_state_dict(checkpoint_path)
+    state_dict, _ = load_orbax_state_dict(checkpoint_path)
 
     # Apply key remapping
     if remap:
