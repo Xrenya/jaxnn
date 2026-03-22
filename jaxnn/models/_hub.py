@@ -7,21 +7,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, Literal, List, Optional, Tuple, Union
 
-import torch
 from flax import nnx
-import orbax.checkpoint as ocp
-from torch.hub import HASH_REGEX, download_url_to_file, snapshot_download, urlparse
-
-try:
-    from torch.hub import get_dir
-except ImportError:
-    from torch.hub import _get_torch_home as get_dir
 
 from jaxnn import __version__
 from jaxnn.models._pretrained import filter_pretrained_cfg
 
 try:
-    from huggingface_hub import HfApi, hf_hub_download, model_info
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download, model_info
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
     hf_hub_download = partial(
         hf_hub_download, library_name="jaxnn", library_version=__version__
@@ -106,7 +98,7 @@ def _parse_model_cfg(
         pretrained_cfg["num_classes"] = cfg["num_classes"]
     if "label_names" in cfg:
         pretrained_cfg["label_names"] = cfg["label_names"]
-    if "label_names" in cfg:
+    if "label_descriptions" in cfg:
         pretrained_cfg["label_descriptions"] = cfg["label_descriptions"]
 
     model_args = cfg.get("model_args", {})
@@ -136,31 +128,6 @@ def load_model_config_from_path(model_path: Union[str, Path]):
     return _parse_model_cfg(cfg, extra_fields=extra_fields)
 
 
-def download_cached_file(
-    url: Union[str, List[str], Tuple[str, str]],
-    check_hash: bool = True,
-    progress: bool = False,
-    cache_dir: Optional[Union[str, Path]] = None,
-):
-    if isinstance(url, (list, tuple)):
-        url, filename = url
-    else:
-        parts = urlparse(url)
-        filename = os.path.basename(parts.path)
-    if cache_dir:
-        os.makedirs(cache_dir, exist_ok=True)
-    else:
-        cache_dir = get_cache_dir()
-    cache_file = os.path.join(cache_dir, filename)
-    if os.path.exists(cache_file):
-        if check_hash:
-            r = HASH_REGEX.search(filename)
-            hash_prefix = r.group(1) if r else None
-    if not os.path.exists(cache_file) or (hash_prefix and not verify_hash(cache_file, hash_prefix)):
-        download_url_to_file(url, cache_file, hash_prefix, progress=progress)
-    return cache_file
-
-
 def verify_hash(file_path: str, expected_hash: str) -> bool:
     with open(file_path, "rb") as f:
         file_hash = hashlib.sha256(f.read()).hexdigest()
@@ -170,21 +137,28 @@ def verify_hash(file_path: str, expected_hash: str) -> bool:
 def load_state_path_from_hf(
     model_id: str,
     cache_dir: Optional[Union[str, Path]] = None,
+    revision: Optional[str] = None,
     ignore_patterns: Optional[Union[None, List[str]]] = [
         "*.md", ".gitattributes"
     ],
-):
+) -> Path:
+    """Download model from HF Hub, return local snapshot directory."""
     assert has_hf_hub(True)
     hf_model_id, hf_revision = hf_split(model_id)
-    snapshot_download(
+
+    # Explicit revision arg takes priority over one parsed from model_id
+    effective_revision = revision or hf_revision
+
+    # snapshot_download returns the local cache path — MUST capture it
+    local_dir = snapshot_download(
         hf_model_id,
         repo_type="model",
-        revision=hf_revision,
+        revision=effective_revision,
         cache_dir=cache_dir,
         ignore_patterns=ignore_patterns,
     )
-    
-    return cache_dir
+
+    return Path(local_dir)
 
 
 def save_config_for_hf(
@@ -256,9 +230,11 @@ def save_for_hf(
     # 1. Extract state
     graphdef, state = nnx.split(model)
 
-    # 2. Save weights
-    with ocp.StandardCheckpointer() as checkpointer:
-        checkpointer.save(save_directory / "state", state)
+    # 2. Save weights (pure arrays, consistent with load path)
+    from jaxnn.models._builder import _get_checkpointer, _strip_variable_state
+    pure_tree = _strip_variable_state(state)
+    ckptr = _get_checkpointer()
+    ckptr.save(str(save_directory / "state"), pure_tree)
 
     # 3. Save config
     config_path = save_directory / HF_CONFIG_NAME

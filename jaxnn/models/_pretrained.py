@@ -14,6 +14,7 @@ class PretrainedCfg:
     state_dict: Optional[Dict[str, Any]] = None
     hf_hub_id: Optional[str] = None
     hf_hub_filename: Optional[str] = None
+    hf_hub_revision: Optional[str] = None
 
     source: Optional[str] = None
     architecture: Optional[str] = None
@@ -21,7 +22,7 @@ class PretrainedCfg:
     custom_load: bool = False
 
     # Input / data config
-    input_size: Tuple[int, int, int] = (224, 224, 3)  # Flax input format
+    input_size: Tuple[int, int, int] = (224, 224, 3)
     test_input_size: Optional[Tuple[int, int, int]] = None
     min_input_size: Optional[Tuple[int, int, int]] = None
     fixed_input_size: bool = False
@@ -54,7 +55,7 @@ class PretrainedCfg:
     @property
     def has_weights(self):
         return self.url or self.file or self.hf_hub_id
-    
+
     def to_dict(
         self,
         remove_source: bool = False,
@@ -73,9 +74,21 @@ def filter_pretrained_cfg(
     remove_null=True,
 ) -> Dict[str, Any]:
     filtered_cfg = {}
-    keep_null = {"pool_size", "first_conv", "classifier"}
+    # These keys must NEVER be removed by remove_null, even if None,
+    # because downstream code checks for their presence
+    keep_null = {
+        "pool_size", "first_conv", "classifier",
+        "label_offset",
+    }
+    # Source fields that carry weight locations — only remove if
+    # remove_source is explicitly True
+    source_keys = {
+        "url", "file", "state_dict",
+        "hf_hub_id", "hf_hub_filename", "hf_hub_revision",
+        "source",
+    }
     for k, v in cfg.items():
-        if remove_source and k in {"url", "file", "hf_hub_id", "hf_hub_id", "hf_hub_filename", "source"}:  # noqa: E501
+        if remove_source and k in source_keys:
             continue
         if remove_null and v is None and k not in keep_null:
             continue
@@ -92,7 +105,7 @@ class DefaultCfg:
     @property
     def default(self):
         return self.cfgs[self.tags[0]]
-    
+
     @property
     def default_with_tag(self):
         tag = self.tags[0]
