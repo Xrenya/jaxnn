@@ -9,7 +9,7 @@ description = "Foundation models in JAX/Flax"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Shaymukhametov Rinat", email = "shaymukhametov.rinat.ml@gmail.com" }]
-requires-python = ">=3.12.12"
+requires-python = ">=3.12"
 keywords = ["jax", "flax", "deep-learning", "computer-vision", "resnet", "timm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
