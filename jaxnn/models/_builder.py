@@ -1,37 +1,48 @@
 import dataclasses
 import logging
-import os
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 import json
 
 import jax.numpy as jnp
 from flax import nnx
-from flax.nnx.statelib import State, FlatState
 import orbax.checkpoint as ocp
 
 from jaxnn.models._pretrained import PretrainedCfg
 from jaxnn.models._registry import get_pretrained_cfg
-from jaxnn.models._hub import load_state_path_from_hf, has_hf_hub
+from jaxnn.models._hub import load_state_path_from_hf
 from jaxnn.models._types import LoadResult
+from jaxnn.models._features import FeatureGetterNet
 
 _logger = logging.getLogger(__name__)
 
 # Global variables for rarely used pretrained checkpoint download progress and hash check.
 # Use set_pretrained_download_progress / set_pretrained_check_hash functions to toggle.
 _DOWNLOAD_PROGRESS = False
-_CHECK_HASH = False 
+_CHECK_HASH = False
 
 __all__ = [
-    'set_pretrained_download_progress',
-    'set_pretrained_check_hash',
-    'load_custom_pretrained',
-    'load_pretrained',
-    'pretrained_cfg_for_features',
-    'resolve_pretrained_cfg',
-    'build_model_with_cfg',
+    "set_pretrained_download_progress",
+    "set_pretrained_check_hash",
+    "load_custom_pretrained",
+    "load_pretrained",
+    "pretrained_cfg_for_features",
+    "resolve_pretrained_cfg",
+    "build_model_with_cfg",
 ]
+
+
+def set_pretrained_download_progress(enable=True):
+    """Set download progress for pretrained weights."""
+    global _DOWNLOAD_PROGRESS
+    _DOWNLOAD_PROGRESS = enable
+
+
+def set_pretrained_check_hash(enable=True):
+    """Set hash checking for pretrained weights."""
+    global _CHECK_HASH
+    _CHECK_HASH = enable
+
 
 ModelT = TypeVar("ModelT", bound=nnx.Module)  # any subclass of nn.Module
 
@@ -55,21 +66,71 @@ def resolve_pretrained_cfg(
     # fallback to looking up pretrained cfg in model registry by variant identifier
     if not pretrained_cfg:
         if pretrained_tag:
-            model_with_tag = '.'.join([variant, pretrained_tag])
+            model_with_tag = ".".join([variant, pretrained_tag])
         pretrained_cfg = get_pretrained_cfg(model_with_tag)
 
     if not pretrained_cfg:
         _logger.warning(
             f"No pretrained configuration specified for {model_with_tag} model. Using a default."
-            f" Please add a config to the model pretrained_cfg registry or pass explicitly.")
+            f" Please add a config to the model pretrained_cfg registry or pass explicitly."
+        )
         pretrained_cfg = PretrainedCfg()  # instance with defaults
 
     pretrained_cfg_overlay = pretrained_cfg_overlay or {}
     if not pretrained_cfg.architecture:
-        pretrained_cfg_overlay.setdefault('architecture', variant)
+        pretrained_cfg_overlay.setdefault("architecture", variant)
     pretrained_cfg = dataclasses.replace(pretrained_cfg, **pretrained_cfg_overlay)
 
     return pretrained_cfg
+
+
+def pretrained_cfg_for_features(pretrained_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapt a pretrained cfg for feature extraction (remove classifier info)."""
+    pretrained_cfg = dict(pretrained_cfg)
+    # remove default pretrained cfg fields that don't have much relevance for feature backbone
+    to_remove = ("num_classes", "classifier", "global_pool")
+    for tr in to_remove:
+        pretrained_cfg.pop(tr, None)
+    return pretrained_cfg
+
+
+def load_custom_pretrained(
+    model: nnx.Module,
+    pretrained_cfg: Optional[Dict[str, Any]] = None,
+    cache_dir: Optional[Union[str, Path]] = None,
+) -> None:
+    """Load pretrained weights for models with custom load functions.
+
+    The model must implement a `load_pretrained` method.
+    """
+    pretrained_cfg = pretrained_cfg or getattr(model, "pretrained_cfg", None)
+    if not pretrained_cfg:
+        _logger.warning("No pretrained config found for custom load.")
+        return
+
+    source, location = _resolve_pretrained_source(pretrained_cfg)
+    if source is None:
+        _logger.warning("No pretrained source found for custom load.")
+        return
+
+    if source == "hf-hub":
+        location = str(
+            load_state_path_from_hf(
+                location,
+                cache_dir=cache_dir,
+                revision=pretrained_cfg.get("hf_hub_revision"),
+            )
+        )
+    elif source == "local-dir":
+        pass  # location is already the path
+    else:
+        _logger.warning("Custom load does not support source '%s'.", source)
+        return
+
+    if hasattr(model, "load_pretrained"):
+        model.load_pretrained(location)
+    else:
+        _logger.warning("Model does not implement load_pretrained().")
 
 
 def _filter_kwargs(kwargs: Dict[str, Any], names: List[str]) -> None:
@@ -80,26 +141,26 @@ def _filter_kwargs(kwargs: Dict[str, Any], names: List[str]) -> None:
 
 
 def _update_default_model_kwargs(pretrained_cfg, kwargs, kwargs_filter) -> None:
-    """ Update the default_cfg and kwargs before passing to model
+    """Update the default_cfg and kwargs before passing to model
 
     Args:
         pretrained_cfg: input pretrained cfg (updated in-place)
         kwargs: keyword args passed to model build fn (updated in-place)
         kwargs_filter: keyword arg keys that must be removed before model __init__
     """
-    default_kwarg_names = ('num_classes', 'global_pool', 'in_chans')
-    if pretrained_cfg.get('fixed_input_size', False):
+    default_kwarg_names = ("num_classes", "global_pool", "in_chans")
+    if pretrained_cfg.get("fixed_input_size", False):
         # if fixed_input_size exists and is True, model takes an img_size arg that fixes its input size
-        default_kwarg_names += ('img_size',)
+        default_kwarg_names += ("img_size",)
 
     for n in default_kwarg_names:
         if n == "img_size":
-            input_size = pretrained_cfg.get('input_size', None)
+            input_size = pretrained_cfg.get("input_size", None)
             if input_size is not None:
                 assert len(input_size) == 3
                 kwargs.setdefault(n, input_size[:2])
         elif n == "in_chans":
-            input_size = pretrained_cfg.get('input_size', None)
+            input_size = pretrained_cfg.get("input_size", None)
             if input_size is not None:
                 assert len(input_size) == 3
                 kwargs.setdefault(n, input_size[-1])
@@ -138,10 +199,6 @@ def _get_checkpointer():
     PyTreeCheckpointer is preferred because it does not require a
     target structure for .restore(), making partial loading safe.
     """
-    if ocp is None:
-        raise ImportError(
-            "orbax-checkpoint is required: pip install orbax-checkpoint"
-        )
     # PyTreeCheckpointer: restores without target (no warning)
     if hasattr(ocp, "PyTreeCheckpointer"):
         return ocp.PyTreeCheckpointer()
@@ -153,7 +210,7 @@ def _get_checkpointer():
 
 
 def _strip_variable_state(obj):
-    """nnx.State → nested dict of **numpy** arrays.
+    """nnx.State -> nested dict of **numpy** arrays.
 
     This is the critical step: we strip VariableState wrappers so that
     Orbax saves a plain {key: array} tree. Without this, Orbax serialises
@@ -161,7 +218,7 @@ def _strip_variable_state(obj):
     and restoring without a matching target produces a mismatched tree.
     """
     if isinstance(obj, nnx.Variable):
-        return jnp.array(obj.get_value())          # ← just the array
+        return jnp.array(obj.get_value())  # ← just the array
     if isinstance(obj, (dict, nnx.State)):
         return {str(k): _strip_variable_state(v) for k, v in obj.items()}
     if hasattr(obj, "shape"):
@@ -194,13 +251,11 @@ def _normalize_flat_dict(flat: Dict[str, Any]) -> Dict[str, Any]:
     if not has_value_suffix:
         return flat
 
-    _logger.info(
-        "Detected legacy VariableState checkpoint — normalising keys"
-    )
+    _logger.info("Detected legacy VariableState checkpoint - normalising keys")
     cleaned: Dict[str, Any] = {}
     for k, v in flat.items():
         if k.endswith(".type") or k.endswith(".raw_value"):
-            continue # metadata — skip
+            continue  # metadata - skip
         if k.endswith(".value"):
             cleaned[k[: -len(".value")]] = v  # strip suffix
         else:
@@ -235,7 +290,7 @@ def save_orbax_checkpoint(
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── config.json ──
+    # config.json
     cfg = config or getattr(model, "pretrained_cfg", None) or {}
     if cfg:
         with open(checkpoint_dir / "config.json", "w") as f:
@@ -284,7 +339,7 @@ def load_orbax_state_dict(
 def adapt_input_conv(
     in_chans: int,
     weight: jnp.ndarray,
-    channel_axis: int = 2,  # Flax shape[Height Width Iinput Output]
+    channel_axis: int = 2,  # Flax shape[Height Width Input Output]
 ) -> jnp.ndarray:
     orig = weight.shape[channel_axis]
     if in_chans == orig:
@@ -312,7 +367,7 @@ def _apply_flat_state_dict(
     """Merge a flat ``{dotted_key: array}`` dict into an NNX model."""
     state = nnx.state(model)
     leaves = dict(_iter_state_leaves(state))
-    
+
     model_keys = set(leaves.keys())
     loaded_keys = set(flat_dict)
 
@@ -325,9 +380,7 @@ def _apply_flat_state_dict(
             msgs.append(f"Missing keys: {missing}")
         if unexpected:
             msgs.append(f"Unexpected keys: {unexpected}")
-        raise RuntimeError(
-            "Error(s) in strict load:\n\t" + "\n\t".join(msgs)
-        )
+        raise RuntimeError("Error(s) in strict load:\n\t" + "\n\t".join(msgs))
 
     shape_mismatches: List[str] = []
     for key in sorted(model_keys & loaded_keys):
@@ -336,8 +389,10 @@ def _apply_flat_state_dict(
 
         if var_state.get_value().shape != arr.shape:
             _logger.warning(
-                "Shape mismatch for '%s': model %s vs loaded %s — skipping",
-                key, var_state.get_value().shape, arr.shape,
+                "Shape mismatch for '%s': model %s vs loaded %s - skipping",
+                key,
+                var_state.get_value().shape,
+                arr.shape,
             )
             shape_mismatches.append(key)
             continue
@@ -350,6 +405,7 @@ def _apply_flat_state_dict(
         missing_keys=missing + shape_mismatches,
         unexpected_keys=unexpected,
     )
+
 
 def debug_key_mismatch(
     model: nnx.Module,
@@ -364,12 +420,11 @@ def debug_key_mismatch(
     print("=== Keys only in MODEL (would be 'missing') ===")
     for k in sorted(model_keys - ckpt_keys):
         print(f"  {k}")
-    print(f"\n=== Keys only in CHECKPOINT (would be 'unexpected') ===")
+    print("\n=== Keys only in CHECKPOINT (would be 'unexpected') ===")
     for k in sorted(ckpt_keys - model_keys):
         print(f"  {k}")
-    print(f"\n=== Matched keys ===")
+    print("\n=== Matched keys ===")
     print(f"  {len(model_keys & ckpt_keys)} / {len(model_keys)} model keys")
-
 
 
 def load_pretrained(
@@ -384,9 +439,9 @@ def load_pretrained(
     """Load pretrained weights into a Flax NNX model.
 
     Config keys (pretrained_cfg):
-        state_dict  → ready-made {dotted_key: array} dict
-        local_dir   → path to Orbax checkpoint folder
-        hf_hub_id   → Hugging Face Hub repo id
+        state_dict  -> ready-made {dotted_key: array} dict
+        local_dir   -> path to Orbax checkpoint folder
+        hf_hub_id   -> Hugging Face Hub repo id
     """
     pretrained_cfg = pretrained_cfg or getattr(model, "pretrained_cfg", None)
     if not pretrained_cfg:
@@ -399,7 +454,7 @@ def load_pretrained(
         arch = pretrained_cfg.get("architecture", "this model")
         raise RuntimeError(f"No pretrained weights for {arch}.")
 
-    # ── 1. Obtain flat state dict ────────────────────────────
+    # 1. Obtain flat state dict
     if source == "state_dict":
         _logger.info("Loading pretrained weights from state dict")
         raw = location
@@ -448,12 +503,8 @@ def load_pretrained(
                 wk = name + suffix
                 if wk in state_dict:
                     try:
-                        state_dict[wk] = adapt_input_conv(
-                            in_chans, state_dict[wk]
-                        )
-                        _logger.info(
-                            "Adapted '%s' from 3→%d channels", name, in_chans
-                        )
+                        state_dict[wk] = adapt_input_conv(in_chans, state_dict[wk])
+                        _logger.info("Adapted '%s' from 3->%d channels", name, in_chans)
                     except NotImplementedError:
                         del state_dict[wk]
                         strict = False
@@ -487,10 +538,8 @@ def load_pretrained(
     if result.missing_keys:
         _logger.info("Missing keys: %s", ", ".join(result.missing_keys))
     if result.unexpected_keys:
-        _logger.warning(
-            "Unexpected keys: %s", ", ".join(result.unexpected_keys)
-        )
-        
+        _logger.warning("Unexpected keys: %s", ", ".join(result.unexpected_keys))
+
 
 def build_model_with_cfg(
     model_cls: Union[Type[ModelT], Callable[..., ModelT]],
@@ -506,7 +555,7 @@ def build_model_with_cfg(
     kwargs_filter: Optional[Tuple[str]] = None,
     **kwargs,
 ) -> ModelT:
-    """ Build model with specified default_cfg and optional model_cfg
+    """Build model with specified default_cfg and optional model_cfg
 
     This helper fn aids in the construction of a model including:
       * handling default_cfg and associated pretrained weight loading
@@ -528,7 +577,7 @@ def build_model_with_cfg(
         kwargs_filter: Kwargs keys to filter (remove) before passing to model
         **kwargs: Model args passed through to model __init__
     """
-    pruned = kwargs.pop('pruned', False)
+    pruned = kwargs.pop("pruned", False)
     features = False
     feature_cfg = feature_cfg or {}
 
@@ -536,24 +585,24 @@ def build_model_with_cfg(
     pretrained_cfg = resolve_pretrained_cfg(
         variant,
         pretrained_cfg=pretrained_cfg,
-        pretrained_cfg_overlay=pretrained_cfg_overlay
+        pretrained_cfg_overlay=pretrained_cfg_overlay,
     )
     pretrained_cfg = pretrained_cfg.to_dict()
-    
+
     seed = pretrained_cfg.get("rngs", 0)
     rngs = dict(rngs=nnx.Rngs(seed))
     kwargs.update(rngs)
 
     _update_default_model_kwargs(pretrained_cfg, kwargs, kwargs_filter)
-    
-     # Setup for feature extraction wrapper done at end of this fn
-    if kwargs.pop('features_only', False):
+
+    # Setup for feature extraction wrapper done at end of this fn
+    if kwargs.pop("features_only", False):
         features = True
-        feature_cfg.setdefault('out_indices', (0, 1, 2, 3, 4))
-        if 'out_indices' in kwargs:
-            feature_cfg['out_indices'] = kwargs.pop('out_indices')
-        if 'feature_cls' in kwargs:
-            feature_cfg['feature_cls'] = kwargs.pop('feature_cls')
+        feature_cfg.setdefault("out_indices", (0, 1, 2, 3, 4))
+        if "out_indices" in kwargs:
+            feature_cfg["out_indices"] = kwargs.pop("out_indices")
+        if "feature_cls" in kwargs:
+            feature_cfg["feature_cls"] = kwargs.pop("feature_cls")
 
     # Instantiate the model
     if model_cfg is None:
@@ -564,55 +613,39 @@ def build_model_with_cfg(
     model.default_cfg = model.pretrained_cfg  # alias for backwards compat
 
     if pruned:
-        _logger.warning("Pruned model is not implemented")
+        _logger.warning("Pruned model loading is not yet implemented for Flax/JAX")
 
     # For classification models, check class attr, then kwargs, then default to 1k, otherwise 0 for feats
-    num_classes_pretrained = 0 if features else getattr(model, 'num_classes', kwargs.get('num_classes', 1000))
+    num_classes_pretrained = (
+        0
+        if features
+        else getattr(model, "num_classes", kwargs.get("num_classes", 1000))
+    )
     if pretrained:
         load_pretrained(
             model,
             pretrained_cfg=pretrained_cfg,
             num_classes=num_classes_pretrained,
-            in_chans=kwargs.get('in_chans', 3),
+            in_chans=kwargs.get("in_chans", 3),
             filter_fn=pretrained_filter_fn,
             strict=pretrained_strict,
             cache_dir=cache_dir,
         )
 
     # Wrap the model in a feature extraction module if enabled
-    # if features:
-    #     use_getter = False
-    #     if 'feature_cls' in feature_cfg:
-    #         feature_cls = feature_cfg.pop('feature_cls')
-    #         if isinstance(feature_cls, str):
-    #             feature_cls = feature_cls.lower()
+    if features:
+        feature_cls = FeatureGetterNet
+        if "feature_cls" in feature_cfg:
+            feature_cls_name = feature_cfg.pop("feature_cls")
+            if isinstance(feature_cls_name, str):
+                feature_cls_name = feature_cls_name.lower()
+                if feature_cls_name in ("getter", "list", "dict"):
+                    feature_cls = FeatureGetterNet
+                else:
+                    assert False, f"Unknown feature class {feature_cls_name}"
 
-    #             # flatten_sequential only valid for some feature extractors
-    #             if feature_cls not in ('dict', 'list', 'hook'):
-    #                 feature_cfg.pop('flatten_sequential', None)
-
-    #             if 'hook' in feature_cls:
-    #                 feature_cls = FeatureHookNet
-    #             elif feature_cls == 'list':
-    #                 feature_cls = FeatureListNet
-    #             elif feature_cls == 'dict':
-    #                 feature_cls = FeatureDictNet
-    #             elif feature_cls == 'fx':
-    #                 feature_cls = FeatureGraphNet
-    #             elif feature_cls == 'getter':
-    #                 use_getter = True
-    #                 feature_cls = FeatureGetterNet
-    #             else:
-    #                 assert False, f'Unknown feature class {feature_cls}'
-    #     else:
-    #         feature_cls = FeatureListNet
-
-    #     output_fmt = getattr(model, 'output_fmt', None)
-    #     if output_fmt is not None and not use_getter:  # don't set default for intermediate feat getter
-    #         feature_cfg.setdefault('output_fmt', output_fmt)
-
-    #     model = feature_cls(model, **feature_cfg)
-    #     model.pretrained_cfg = pretrained_cfg_for_features(pretrained_cfg)  # add back pretrained cfg
-    #     model.default_cfg = model.pretrained_cfg  # alias for rename backwards compat (default_cfg -> pretrained_cfg)
+        model = feature_cls(model, **feature_cfg)
+        model.pretrained_cfg = pretrained_cfg_for_features(pretrained_cfg)
+        model.default_cfg = model.pretrained_cfg
 
     return model

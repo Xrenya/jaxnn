@@ -1,4 +1,4 @@
-from .resnet import *
+from .resnet import ResNet as ResNet, BasicBlock as BasicBlock, Bottleneck as Bottleneck
 
 from ._pretrained import (
     PretrainedCfg as PretrainedCfg,
@@ -27,8 +27,4 @@ from ._hub import (
     push_to_hf_hub as push_to_hf_hub,
     save_for_hf as save_for_hf,
 )
-from ._factory import (
-    create_model as create_model,
-#     parse_model_name as parse_model_name,
-#     safe_model_name as safe_model_name,
-)
+from ._factory import create_model as create_model

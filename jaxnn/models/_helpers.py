@@ -1,7 +1,8 @@
-""" Model creation / weight loading / state_dict helpers
+"""Model creation / weight loading / state_dict helpers
 
-Hacked together by / Copyright 2026 Rinat
+Hacked together by / Copyright 2026 Rinat Shaymukhametov
 """
+
 import logging
 from typing import Any, Callable, Dict, Optional, Union, List, Tuple
 from pathlib import Path

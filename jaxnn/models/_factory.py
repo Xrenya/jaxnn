@@ -13,10 +13,10 @@ __all__ = ["parse_model_name", "create_model"]
 
 
 def parse_model_name(model_name: str) -> Tuple[Optional[str], str]:
-    if model_name.startswith('hf-hub:'):
-        return 'hf-hub', model_name[len('hf-hub:'):]
-    elif model_name.startswith('local-dir:'):
-        return 'local-dir', model_name[len('local-dir:'):]
+    if model_name.startswith("hf-hub:"):
+        return "hf-hub", model_name[len("hf-hub:") :]
+    elif model_name.startswith("local-dir:"):
+        return "local-dir", model_name[len("local-dir:") :]
     else:
         model_name = os.path.split(model_name)[-1]
         return None, model_name
@@ -37,20 +37,20 @@ def create_model(
     model_source, model_id = parse_model_name(model_name)
     if model_source:
         assert not pretrained_cfg, (
-            'pretrained_cfg should not be set when sourcing model from '
-            'Hugging Face Hub or local directory.'
+            "pretrained_cfg should not be set when sourcing model from "
+            "Hugging Face Hub or local directory."
         )
-        if model_source == 'hf-hub':
+        if model_source == "hf-hub":
             pretrained_cfg, model_name, model_args = load_model_config_from_hf(
                 model_id,
                 cache_dir=cache_dir,
             )
-        elif model_source == 'local-dir':
+        elif model_source == "local-dir":
             pretrained_cfg, model_name, model_args = load_model_config_from_path(
                 model_id,
             )
         else:
-            assert False, f'Unknown model_source {model_source}'
+            assert False, f"Unknown model_source {model_source}"
         if model_args:
             for k, v in model_args.items():
                 kwargs.setdefault(k, v)
@@ -62,7 +62,7 @@ def create_model(
             pretrained_cfg = pretrained_tag
 
     if not is_model(model_name):
-        raise RuntimeError('Unknown model (%s)' % model_name)
+        raise RuntimeError("Unknown model (%s)" % model_name)
 
     create_fn = model_entrypoint(model_name)
 

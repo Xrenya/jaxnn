@@ -1,4 +1,5 @@
 """Tests for model creation (no pretrained weights)."""
+
 import pytest
 import jax.numpy as jnp
 from jaxnn import create_model

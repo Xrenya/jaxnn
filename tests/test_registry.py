@@ -1,8 +1,11 @@
 """Tests for model registry and factory functions."""
-import pytest
+
 from jaxnn.models._factory import parse_model_name
 from jaxnn.models._registry import (
-    list_models, list_pretrained, is_model, split_model_name_tag,
+    list_models,
+    list_pretrained,
+    is_model,
+    split_model_name_tag,
     get_pretrained_cfg,
 )
 

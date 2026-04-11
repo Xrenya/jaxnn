@@ -1,8 +1,7 @@
 """Tests for model builder and loading utilities."""
+
 import json
 import pytest
-from pathlib import Path
-from unittest.mock import patch
 
 from jaxnn.models._hub import load_model_config_from_path, _parse_model_cfg
 from jaxnn.models._builder import _resolve_pretrained_source

@@ -12,6 +12,7 @@ class LoadResult:
 @dataclass
 class FeatureInfo:
     """Metadata for one feature stage"""
+
     index: int
     name: str
     num_chs: int
@@ -26,6 +27,7 @@ class FeatureInfo:
 
 class CheckpointFormat(Enum):
     """Supported checkpoint formats"""
+
     ORBAX = "orbax"
     NUMPY = "numpy"
     PICKLE = "pickle"

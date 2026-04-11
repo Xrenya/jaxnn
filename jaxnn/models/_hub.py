@@ -5,7 +5,7 @@ import os
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, Literal, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from flax import nnx
 
@@ -13,8 +13,8 @@ from jaxnn import __version__
 from jaxnn.models._pretrained import filter_pretrained_cfg
 
 try:
-    from huggingface_hub import HfApi, hf_hub_download, snapshot_download, model_info
-    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+
     hf_hub_download = partial(
         hf_hub_download, library_name="jaxnn", library_version=__version__
     )
@@ -26,18 +26,24 @@ except ImportError:
 _logger = logging.getLogger(__name__)
 
 __all__ = [
-    "get_cache_dir", "download_cached_file", "has_hf_hub", "hf_split",
-    "load_model_config_from_hf", "load_state_path_from_hf", "save_for_hf",
+    "get_cache_dir",
+    "has_hf_hub",
+    "hf_split",
+    "load_model_config_from_hf",
+    "load_state_path_from_hf",
+    "save_for_hf",
     "push_to_hf_hub",
 ]
 
 # Default name for a weights file hosted on the Huggingface Hub.
-HF_WEIGHTS_NAME = "model.msgpack"  # default jax msgpack which is already contains 'safetensors'
+HF_WEIGHTS_NAME = (
+    "model.msgpack"  # default jax msgpack which is already contains 'safetensors'
+)
 HF_SAFE_WEIGHTS_NAME = "model.safetensors"  # safetensors version
 HF_CONFIG_NAME = "config.json"  # config file
 
 
-def get_cache_dir(child_dir: str = ''):
+def get_cache_dir(child_dir: str = ""):
     """JAX-friendly cache dir."""
     cache_root = os.path.expanduser("~/.cache/jaxnn")
     if child_dir:
@@ -50,7 +56,7 @@ def has_hf_hub(necessary: bool = False):
     if not _has_hf_hub and necessary:
         # if no HF Hub module installed, and it is necessary to continue, raise error
         raise RuntimeError(
-            "Hugging Face hub model specified but package not installed." \
+            "Hugging Face hub model specified but package not installed."
             "Run `pip install huggingface_hub`."
         )
     return _has_hf_hub
@@ -87,8 +93,7 @@ def load_cfg_from_json(json_file: Union[str, Path]):
 
 
 def _parse_model_cfg(
-    cfg: Dict[str, Any],
-    extra_fields: Dict[str, Any]
+    cfg: Dict[str, Any], extra_fields: Dict[str, Any]
 ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
     pretrained_cfg = cfg["pretrained_cfg"]
     pretrained_cfg.update(extra_fields)
@@ -104,7 +109,7 @@ def _parse_model_cfg(
     model_args = cfg.get("model_args", {})
     model_name = cfg["architecture"]
     return pretrained_cfg, model_name, model_args
-    
+
 
 def load_model_config_from_hf(
     model_id: str,
@@ -138,9 +143,7 @@ def load_state_path_from_hf(
     model_id: str,
     cache_dir: Optional[Union[str, Path]] = None,
     revision: Optional[str] = None,
-    ignore_patterns: Optional[Union[None, List[str]]] = [
-        "*.md", ".gitattributes"
-    ],
+    ignore_patterns: Optional[Union[None, List[str]]] = ["*.md", ".gitattributes"],
 ) -> Path:
     """Download model from HF Hub, return local snapshot directory."""
     assert has_hf_hub(True)
@@ -149,7 +152,7 @@ def load_state_path_from_hf(
     # Explicit revision arg takes priority over one parsed from model_id
     effective_revision = revision or hf_revision
 
-    # snapshot_download returns the local cache path — MUST capture it
+    # snapshot_download returns the local cache path - MUST capture it
     local_dir = snapshot_download(
         hf_model_id,
         repo_type="model",
@@ -169,15 +172,13 @@ def save_config_for_hf(
 ):
     model_config = model_config or {}
     hf_config = {}
-    
+
     pretrained_cfg = getattr(model, "pretrained_cfg", {})
-    
+
     pretrained_cfg = filter_pretrained_cfg(
-        pretrained_cfg,
-        remove_source=True,
-        remove_null=True
+        pretrained_cfg, remove_source=True, remove_null=True
     )
-     # set some values at root config level
+    # set some values at root config level
     hf_config["architecture"] = pretrained_cfg.pop("architecture")
     hf_config["num_classes"] = model_config.pop(
         "num_classes", getattr(model, "num_classes", None)
@@ -195,27 +196,27 @@ def save_config_for_hf(
     if isinstance(global_pool_type, str) and global_pool_type:
         hf_config["global_pool"] = global_pool_type
 
-    # Save class label info 
-    label_names = model_config.pop('label_names', None)
+    # Save class label info
+    label_names = model_config.pop("label_names", None)
     if label_names:
         assert isinstance(label_names, (dict, list, tuple))
         # map label id (classifier index) -> unique label name (ie synset for ImageNet, MID for OpenImages)
         # can be a dict id: name if there are id gaps, or tuple/list if no gaps.
-        hf_config['label_names'] = label_names
+        hf_config["label_names"] = label_names
 
-    label_descriptions = model_config.pop('label_descriptions', None)
+    label_descriptions = model_config.pop("label_descriptions", None)
     if label_descriptions:
         assert isinstance(label_descriptions, dict)
         # maps label names -> descriptions
-        hf_config['label_descriptions'] = label_descriptions
+        hf_config["label_descriptions"] = label_descriptions
 
     if model_args:
-        hf_config['model_args'] = model_args
+        hf_config["model_args"] = model_args
     if pretrained_cfg:
-        hf_config['pretrained_cfg'] = pretrained_cfg
+        hf_config["pretrained_cfg"] = pretrained_cfg
     hf_config.update(model_config)
 
-    with config_path.open('w') as f:
+    with config_path.open("w") as f:
         json.dump(hf_config, f, indent=2)
 
 
@@ -223,7 +224,7 @@ def save_for_hf(
     model: nnx.Module,
     save_directory: str,
     model_config: Optional[dict] = None,
-    model_args: Optional[dict] = None
+    model_args: Optional[dict] = None,
 ):
     save_directory = Path(save_directory)
 
@@ -232,6 +233,7 @@ def save_for_hf(
 
     # 2. Save weights (pure arrays, consistent with load path)
     from jaxnn.models._builder import _get_checkpointer, _strip_variable_state
+
     pure_tree = _strip_variable_state(state)
     ckptr = _get_checkpointer()
     ckptr.save(str(save_directory / "state"), pure_tree)
@@ -273,7 +275,7 @@ def push_to_hf_hub(
     has_readme = api.file_exists(
         repo_id=repo_id, filename="README.md", revision=revision
     )
-    
+
     # Dump model and push to Hub
     with TemporaryDirectory() as tmpdir:
         # Save model weights and config.
@@ -287,7 +289,7 @@ def push_to_hf_hub(
         # Add readme if it does not exist
         if not has_readme:
             model_card = model_card or {}
-            model_name = repo_id.split('/')[-1]
+            model_name = repo_id.split("/")[-1]
             readme_path = Path(tmpdir) / "README.md"
             readme_text = generate_readme(model_card, model_name, task_name=task_name)
             readme_path.write_text(readme_text)
@@ -300,14 +302,14 @@ def push_to_hf_hub(
             create_pr=create_pr,
             commit_message=commit_message,
         )
-    
+
 
 def generate_readme(
-        model_card: dict,
-        model_name: str,
-        task_name: str = 'image-classification',
+    model_card: dict,
+    model_name: str,
+    task_name: str = "image-classification",
 ):
-    tags = model_card.get('tags', None) or [task_name, 'jaxnn', 'transformers']
+    tags = model_card.get("tags", None) or [task_name, "jaxnn", "transformers"]
     readme_text = "---\n"
     if tags:
         readme_text += "tags:\n"
@@ -316,30 +318,32 @@ def generate_readme(
     readme_text += f"pipeline_tag: {task_name}\n"
     readme_text += f"library_name: {model_card.get('library_name', 'jaxnn')}\n"
     readme_text += f"license: {model_card.get('license', 'apache-2.0')}\n"
-    if 'license_name' in model_card:
+    if "license_name" in model_card:
         readme_text += f"license_name: {model_card.get('license_name')}\n"
-    if 'license_link' in model_card:
+    if "license_link" in model_card:
         readme_text += f"license_link: {model_card.get('license_link')}\n"
-    if 'details' in model_card and 'Dataset' in model_card['details']:
-        readme_text += 'datasets:\n'
-        if isinstance(model_card['details']['Dataset'], (tuple, list)):
-            for d in model_card['details']['Dataset']:
+    if "details" in model_card and "Dataset" in model_card["details"]:
+        readme_text += "datasets:\n"
+        if isinstance(model_card["details"]["Dataset"], (tuple, list)):
+            for d in model_card["details"]["Dataset"]:
                 readme_text += f"- {d.lower()}\n"
         else:
             readme_text += f"- {model_card['details']['Dataset'].lower()}\n"
-        if 'Pretrain Dataset' in model_card['details']:
-            if isinstance(model_card['details']['Pretrain Dataset'], (tuple, list)):
-                for d in model_card['details']['Pretrain Dataset']:
+        if "Pretrain Dataset" in model_card["details"]:
+            if isinstance(model_card["details"]["Pretrain Dataset"], (tuple, list)):
+                for d in model_card["details"]["Pretrain Dataset"]:
                     readme_text += f"- {d.lower()}\n"
             else:
-                readme_text += f"- {model_card['details']['Pretrain Dataset'].lower()}\n"
+                readme_text += (
+                    f"- {model_card['details']['Pretrain Dataset'].lower()}\n"
+                )
     readme_text += "---\n"
     readme_text += f"# Model card for {model_name}\n"
-    if 'description' in model_card:
+    if "description" in model_card:
         readme_text += f"\n{model_card['description']}\n"
-    if 'details' in model_card:
-        readme_text += f"\n## Model Details\n"
-        for k, v in model_card['details'].items():
+    if "details" in model_card:
+        readme_text += "\n## Model Details\n"
+        for k, v in model_card["details"].items():
             if isinstance(v, (list, tuple)):
                 readme_text += f"- **{k}:**\n"
                 for vi in v:
@@ -350,22 +354,22 @@ def generate_readme(
                     readme_text += f"  - {ki}: {vi}\n"
             else:
                 readme_text += f"- **{k}:** {v}\n"
-    if 'usage' in model_card:
-        readme_text += f"\n## Model Usage\n"
-        readme_text += model_card['usage']
-        readme_text += '\n'
+    if "usage" in model_card:
+        readme_text += "\n## Model Usage\n"
+        readme_text += model_card["usage"]
+        readme_text += "\n"
 
-    if 'comparison' in model_card:
-        readme_text += f"\n## Model Comparison\n"
-        readme_text += model_card['comparison']
-        readme_text += '\n'
+    if "comparison" in model_card:
+        readme_text += "\n## Model Comparison\n"
+        readme_text += model_card["comparison"]
+        readme_text += "\n"
 
-    if 'citation' in model_card:
-        readme_text += f"\n## Citation\n"
-        if not isinstance(model_card['citation'], (list, tuple)):
-            citations = [model_card['citation']]
+    if "citation" in model_card:
+        readme_text += "\n## Citation\n"
+        if not isinstance(model_card["citation"], (list, tuple)):
+            citations = [model_card["citation"]]
         else:
-            citations = model_card['citation']
+            citations = model_card["citation"]
         for c in citations:
             readme_text += f"```bibtex\n{c}\n```\n"
     return readme_text

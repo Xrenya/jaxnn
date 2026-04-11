@@ -1,5 +1,11 @@
-""" Model Registry
-Hacked together by / Copyright 2020 Ross Wightman
+"""Model Registry
+
+Adapted from PyTorch/timm's model registry implementation.
+Copyright of original work: 2020 Ross Wightman
+
+Rewritten and extended by Rinat Shaymukhametov, with minor modifications
+
+Hacked together by / Copyright 2026 Rinat Shaymukhametov
 """
 
 import fnmatch
@@ -9,48 +15,81 @@ import warnings
 from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Sequence, Union, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Sequence,
+    Union,
+    Tuple,
+)
 
 from ._pretrained import PretrainedCfg, DefaultCfg
 
 __all__ = [
-    'split_model_name_tag', 'get_arch_name', 'register_model', 'generate_default_cfgs',
-    'list_models', 'list_pretrained', 'is_model', 'model_entrypoint', 'list_modules', 'is_model_in_modules',
-    'get_pretrained_cfg_value', 'is_model_pretrained', 'get_arch_pretrained_cfgs'
+    "split_model_name_tag",
+    "get_arch_name",
+    "register_model",
+    "generate_default_cfgs",
+    "list_models",
+    "list_pretrained",
+    "is_model",
+    "model_entrypoint",
+    "list_modules",
+    "is_model_in_modules",
+    "get_pretrained_cfg_value",
+    "is_model_pretrained",
+    "get_arch_pretrained_cfgs",
 ]
 
-_module_to_models: Dict[str, Set[str]] = defaultdict(set)  # dict of sets to check membership of model in module
+_module_to_models: Dict[str, Set[str]] = defaultdict(
+    set
+)  # dict of sets to check membership of model in module
 _model_to_module: Dict[str, str] = {}  # mapping of model names to module names
-_model_entrypoints: Dict[str, Callable[..., Any]] = {}  # mapping of model names to architecture entrypoint fns
-_model_has_pretrained: Set[str] = set()  # set of model names that have pretrained weight url present
-_model_default_cfgs: Dict[str, PretrainedCfg] = {}  # central repo for model arch -> default cfg objects
-_model_pretrained_cfgs: Dict[str, PretrainedCfg] = {}  # central repo for model arch.tag -> pretrained cfgs
-_model_with_tags: Dict[str, List[str]] = defaultdict(list)  # shortcut to map each model arch to all model + tag names
+_model_entrypoints: Dict[
+    str, Callable[..., Any]
+] = {}  # mapping of model names to architecture entrypoint fns
+_model_has_pretrained: Set[str] = (
+    set()
+)  # set of model names that have pretrained weight url present
+_model_default_cfgs: Dict[
+    str, PretrainedCfg
+] = {}  # central repo for model arch -> default cfg objects
+_model_pretrained_cfgs: Dict[
+    str, PretrainedCfg
+] = {}  # central repo for model arch.tag -> pretrained cfgs
+_model_with_tags: Dict[str, List[str]] = defaultdict(
+    list
+)  # shortcut to map each model arch to all model + tag names
 
-def is_model(model_name: str) -> bool:
-    """Verify model existance"""
-    arch_name = get_arch_name(model_name=model_name)
-    return arch_name in _model_entrypoints
 
-def split_model_name_tag(model_name: str, no_tag: str = '') -> Dict[str, str]:
-    model_name, *tag_list = model_name.split('.', 1)
+def split_model_name_tag(model_name: str, no_tag: str = "") -> Dict[str, str]:
+    model_name, *tag_list = model_name.split(".", 1)
     tag = tag_list[0] if tag_list else no_tag
     return {"model_name": model_name, "tag": tag}
+
 
 def get_arch_name(model_name: str) -> str:
     return split_model_name_tag(model_name).get("model_name", None)
 
-def model_entrypoint(model_name: str, module_filter: Optional[str] = None) -> Callable[..., Any]:
+
+def model_entrypoint(
+    model_name: str, module_filter: Optional[str] = None
+) -> Callable[..., Any]:
     """Fetch a model entrypoint for specified model name"""
     arch_name = get_arch_name(model_name)
     if module_filter and arch_name not in _module_to_models.get(module_filter, {}):
         raise RuntimeError(f"Model ({model_name} not found in module {module_filter}.")
     return _model_entrypoints[arch_name]
 
+
 def register_model(fn: Callable[..., Any]) -> Callable[..., Any]:
     mod = sys.modules[fn.__module__]
-    module_name_split = fn.__module__.split('.')
-    module_name = module_name_split[-1] if len(module_name_split) else ''
+    module_name_split = fn.__module__.split(".")
+    module_name = module_name_split[-1] if len(module_name_split) else ""
 
     model_name = fn.__name__
     if hasattr(mod, "__all__"):
@@ -60,8 +99,8 @@ def register_model(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     if model_name in _model_entrypoints:
         warnings.warn(
-            f'Overwriting {model_name} in registry with {fn.__module__}.{model_name}. This is because the name being '
-            'registered conflicts with an existing name. Please check if this is not expected.',
+            f"Overwriting {model_name} in registry with {fn.__module__}.{model_name}. This is because the name being "
+            "registered conflicts with an existing name. Please check if this is not expected.",
             stacklevel=2,
         )
     _model_entrypoints[model_name] = fn
@@ -78,7 +117,7 @@ def register_model(fn: Callable[..., Any]) -> Callable[..., Any]:
         if default_cfg is None:
             matched = {}
             for k, v in mod.default_cfgs.items():
-                cfg_base = k.split('.', 1)[0]
+                cfg_base = k.split(".", 1)[0]
                 if cfg_base == model_name:
                     matched[k] = v
             if matched:
@@ -93,15 +132,15 @@ def register_model(fn: Callable[..., Any]) -> Callable[..., Any]:
             # Wrap a bare PretrainedCfg into DefaultCfg
             if isinstance(default_cfg, PretrainedCfg):
                 default_cfg = DefaultCfg(
-                    tags=deque(['']),
-                    cfgs={'': default_cfg},
+                    tags=deque([""]),
+                    cfgs={"": default_cfg},
                     is_pretrained=default_cfg.has_weights,
                 )
             elif isinstance(default_cfg, dict):
                 pcfg = PretrainedCfg(**default_cfg)
                 default_cfg = DefaultCfg(
-                    tags=deque(['']),
-                    cfgs={'': pcfg},
+                    tags=deque([""]),
+                    cfgs={"": pcfg},
                     is_pretrained=pcfg.has_weights,
                 )
             else:
@@ -121,11 +160,11 @@ def register_model(fn: Callable[..., Any]) -> Callable[..., Any]:
         for tag_idx, tag in enumerate(default_cfg.tags):
             is_default = tag_idx == 0
             pretrained_cfg = default_cfg.cfgs[tag]
-            model_name_tag = '.'.join([model_name, tag]) if tag else model_name
+            model_name_tag = ".".join([model_name, tag]) if tag else model_name
             replace_items = dict(architecture=model_name, tag=tag if tag else None)
-            if pretrained_cfg.hf_hub_id and pretrained_cfg.hf_hub_id == "jaxnn/":
+            if pretrained_cfg.hf_hub_id and pretrained_cfg.hf_hub_id == "JaxNN/":
                 # auto-complete hub name w/ architecture.tag
-                replace_items['hf_hub_id'] = pretrained_cfg.hf_hub_id + model_name_tag
+                replace_items["hf_hub_id"] = pretrained_cfg.hf_hub_id + model_name_tag
             pretrained_cfg = replace(pretrained_cfg, **replace_items)
 
             if is_default:
@@ -145,19 +184,20 @@ def register_model(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     return fn
 
+
 def _expand_filter(filter: str):
     parsed = split_model_name_tag(filter)
     filter_base = parsed["model_name"]
     filter_tag = parsed["tag"]
     if not filter_tag:
-        return ['.'.join([filter_base, '*']), filter]
+        return [".".join([filter_base, "*"]), filter]
     else:
         return [filter]
 
+
 def _natural_key(string_: str) -> List[Union[int, str]]:
-    return [
-        int(s) if s.isdigit() else s for s in re.split(r'(\d+)', string_.lower())
-    ]
+    return [int(s) if s.isdigit() else s for s in re.split(r"(\d+)", string_.lower())]
+
 
 def list_models(
     filter: Union[str, List[str]] = "",
@@ -167,7 +207,7 @@ def list_models(
     name_matches_cfg: bool = False,
     include_tags: Optional[bool] = None,
 ) -> List[str]:
-    """ Return list of available model names, sorted alphabetically
+    """Return list of available model names, sorted alphabetically
 
     Args:
         filter - Wildcard filter string that works with fnmatch
@@ -235,9 +275,10 @@ def list_models(
 
     return sorted(models, key=_natural_key)
 
+
 def list_pretrained(
-        filter: Union[str, List[str]] = '',
-        exclude_filters: str = '',
+    filter: Union[str, List[str]] = "",
+    exclude_filters: str = "",
 ) -> List[str]:
     return list_models(
         filter=filter,
@@ -246,13 +287,15 @@ def list_pretrained(
         include_tags=True,
     )
 
+
 def is_model(model_name: str) -> bool:
     """Check if a model name exists"""
-    arch_name = get_arch_name(model_name)
+    arch_name = get_arch_name(model_name=model_name)
     return arch_name in _model_entrypoints
 
+
 def is_model_in_modules(
-        model_name: str, module_names: Union[Tuple[str, ...], List[str], Set[str]]
+    model_name: str, module_names: Union[Tuple[str, ...], List[str], Set[str]]
 ) -> bool:
     """Check if a model exists within a subset of modules
 
@@ -264,8 +307,10 @@ def is_model_in_modules(
     assert isinstance(module_names, (tuple, list, set))
     return any(arch_name in _module_to_models[n] for n in module_names)
 
+
 def is_model_pretrained(model_name: str) -> bool:
     return model_name in _model_has_pretrained
+
 
 def get_pretrained_cfg(
     model_name: str,
@@ -296,10 +341,12 @@ def get_pretrained_cfg(
 
     raise RuntimeError(f"No pretrained config for '{model_name}'")
 
+
 def get_pretrained_cfg_value(model_name: str, cfg_key: str) -> Optional[Any]:
     """Get a specific model default_cfg value by key. None if key doesn't exist."""
     cfg = get_pretrained_cfg(model_name, allow_unregistered=True)
     return getattr(cfg, cfg_key, None)
+
 
 def get_arch_pretrained_cfgs(model_name: str) -> Dict[str, PretrainedCfg]:
     parsed = split_model_name_tag(model_name)
@@ -307,6 +354,7 @@ def get_arch_pretrained_cfgs(model_name: str) -> Dict[str, PretrainedCfg]:
     model_names = _model_with_tags[arch_name]
     cfgs = {m: _model_pretrained_cfgs[m] for m in model_names}
     return cfgs
+
 
 def generate_default_cfgs(cfgs: Dict[str, Union[Dict[str, Any], PretrainedCfg]]):
     out = defaultdict(DefaultCfg)
@@ -322,8 +370,10 @@ def generate_default_cfgs(cfgs: Dict[str, Union[Dict[str, Any], PretrainedCfg]])
         tag = parsed["tag"]
 
         is_default_set = model in default_set
-        priority = (has_weights and not tag) or (tag.endswith('*') and not is_default_set)
-        tag = tag.strip('*')
+        priority = (has_weights and not tag) or (
+            tag.endswith("*") and not is_default_set
+        )
+        tag = tag.strip("*")
 
         default_cfg = out[model]
 
@@ -342,8 +392,8 @@ def generate_default_cfgs(cfgs: Dict[str, Union[Dict[str, Any], PretrainedCfg]])
 
     return out
 
+
 def list_modules() -> List[str]:
-    """ Return list of module names that contain models / model entrypoints
-    """
+    """Return list of module names that contain models / model entrypoints"""
     modules = _module_to_models.keys()
     return sorted(modules)

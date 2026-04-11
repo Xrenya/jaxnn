@@ -22,6 +22,7 @@ class PretrainedCfg:
     custom_load: bool = False
 
     # Input / data config
+    rngs: int = 42
     input_size: Tuple[int, int, int] = (224, 224, 3)
     test_input_size: Optional[Tuple[int, int, int]] = None
     min_input_size: Optional[Tuple[int, int, int]] = None
@@ -77,14 +78,20 @@ def filter_pretrained_cfg(
     # These keys must NEVER be removed by remove_null, even if None,
     # because downstream code checks for their presence
     keep_null = {
-        "pool_size", "first_conv", "classifier",
+        "pool_size",
+        "first_conv",
+        "classifier",
         "label_offset",
     }
-    # Source fields that carry weight locations — only remove if
+    # Source fields that carry weight locations - only remove if
     # remove_source is explicitly True
     source_keys = {
-        "url", "file", "state_dict",
-        "hf_hub_id", "hf_hub_filename", "hf_hub_revision",
+        "url",
+        "file",
+        "state_dict",
+        "hf_hub_id",
+        "hf_hub_filename",
+        "hf_hub_revision",
         "source",
     }
     for k, v in cfg.items():
