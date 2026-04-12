@@ -2,12 +2,10 @@
 
 JaxNN is an open-source library for foundation models in JAX and Flax. It provides a unified framework for loading, creating, and using pretrained models (e.g., ResNet, ViT).
 
-> **Note:** `jaxnn` is still in development. Pip installation is not yet available but will be released soon when more models are ported to Flax/JAX.
-
 ## Installation
 
 ```bash
-pip install jaxnn  # coming soon
+pip install jaxnn
 ```
 
 ## Usage
@@ -17,11 +15,12 @@ pip install jaxnn  # coming soon
 ```python
 from urllib.request import urlopen
 from PIL import Image
-import jaxnn
 import jax
 
+import jaxnn
+
 img = Image.open(urlopen(
-    'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/beignets-task-guide.png'
+    'https://huggingface.co/datasets/huggingface/cats-image/resolve/main/cats_image.jpeg'
 ))
 
 model = jaxnn.create_model('resnet34.a1_in1k', pretrained=True)
@@ -43,11 +42,12 @@ top5_probabilities, top5_class_indices = jax.lax.top_k(
 ```python
 from urllib.request import urlopen
 from PIL import Image
-import jaxnn
 import jax
 
+import jaxnn
+
 img = Image.open(urlopen(
-    'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/beignets-task-guide.png'
+    'https://huggingface.co/datasets/huggingface/cats-image/resolve/main/cats_image.jpeg'
 ))
 
 model = jaxnn.create_model(
@@ -76,11 +76,12 @@ for o in output:
 ```python
 from urllib.request import urlopen
 from PIL import Image
-import jaxnn
 import jax
 
+import jaxnn
+
 img = Image.open(urlopen(
-    'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/beignets-task-guide.png'
+    'https://huggingface.co/datasets/huggingface/cats-image/resolve/main/cats_image.jpeg'
 ))
 
 model = jaxnn.create_model(
@@ -109,7 +110,8 @@ output = model.forward_head(output, pre_logits=True)                         # (
 | Preprocessing + normalization | ✅ |
 | Weight loading from Hugging Face Hub | ✅ |
 | CLI tool (`jaxnn list`, `jaxnn info`) | ✅ |
-| PyPI package | ⏳ |
+| PyPI package | ✅ |
+| CUDA support (`pip install jaxnn[cuda]`) | ⏳ |
 | ViT, MobileNet, and more | ⏳ |
 | Training/eval loop with `optax` | ⏳ |
 | Documentation | ⏳ |
