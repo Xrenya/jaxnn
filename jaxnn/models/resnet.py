@@ -12,7 +12,7 @@ from functools import partial
 
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 
-from .layers import to_ntuple, Activation, MaxPool2D, AvgPool2D
+from ..layers import to_ntuple, Activation, MaxPool2D, AvgPool2D
 
 from jaxnn.models._registry import register_model, generate_default_cfgs
 from jaxnn.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -24,71 +24,119 @@ LayerType = Union[str, Callable, Type[nnx.Module]]
 __all__ = ["ResNet", "BasicBlock", "Bottleneck"]
 
 
+# Supported norm layer string aliases.
+# All callables share the interface: cls(num_features, *, rngs).
+# e.g. GroupNorm: nnx.GroupNorm(num_features, num_groups=32, *, rngs) - compatible.
+_NORM_LAYER_MAP: Dict[str, Type[nnx.Module]] = {
+    "batchnorm": nnx.BatchNorm,
+    "batch_norm": nnx.BatchNorm,
+    "bn": nnx.BatchNorm,
+    "groupnorm": nnx.GroupNorm,
+    "group_norm": nnx.GroupNorm,
+    "gn": nnx.GroupNorm,
+    "layernorm": nnx.LayerNorm,
+    "layer_norm": nnx.LayerNorm,
+    "ln": nnx.LayerNorm,
+}
+ 
+ 
+def get_norm_layer(norm_layer: LayerType) -> Type[nnx.Module]:
+    """Resolve a norm layer string alias or pass a callable through unchanged.
+ 
+    Args:
+        norm_layer: A string alias (e.g. ``"groupnorm"``, ``"bn"``) or an
+            already-callable class such as ``nnx.BatchNorm``.
+ 
+    Returns:
+        A callable class with the signature ``cls(num_features, *, rngs)``.
+ 
+    Raises:
+        ValueError: If a string alias is not recognised.
+        TypeError: If the argument is neither a string nor a callable.
+    """
+    if isinstance(norm_layer, str):
+        key = norm_layer.lower().replace("-", "").replace(" ", "")
+        if key not in _NORM_LAYER_MAP:
+            raise ValueError(
+                f"Unknown norm_layer string {norm_layer!r}. "
+                f"Supported aliases: {sorted(_NORM_LAYER_MAP)}"
+            )
+        return _NORM_LAYER_MAP[key]
+    if callable(norm_layer):
+        return norm_layer
+    raise TypeError(
+        f"norm_layer must be a string alias or a callable class, "
+        f"got {type(norm_layer)}"
+    )
+ 
+ 
 class Downsample(nnx.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: Union[int, Tuple[int]],
-        strides: Union[int, Tuple[int]] = 1,
-        dilation: Union[int, Tuple[int]] = 1,
-        first_dilation: Optional[int] = None,
+        kernel_size: Tuple[int, int],
+        strides: Tuple[int, int] = (1, 1),
+        dilation: Tuple[int, int] = (1, 1),
+        first_dilation: Optional[Tuple[int, int]] = None,
         norm_layer: Optional[Type[nnx.Module]] = None,
-        padding: Union[str, Tuple[int]] = "SAME",
+        padding: Union[str, Tuple[int, int]] = "SAME",
         use_bias: bool = False,
         *,
         rngs: nnx.Rngs,
     ) -> None:
-        kernel_size = 1 if strides == 1 and dilation == 1 else kernel_size
-        first_dilation = (first_dilation or dilation) if kernel_size > 1 else 1
-
+        kernel_size = (1, 1) if strides == (1, 1) and dilation == (1, 1) else kernel_size
+        first_dilation = (first_dilation or dilation) if kernel_size != (1, 1) else (1, 1)
+ 
         self.conv = nnx.Conv(
             in_features=in_channels,
             out_features=out_channels,
-            kernel_size=(kernel_size, kernel_size),
-            strides=(strides, strides),
-            kernel_dilation=(first_dilation, first_dilation),
+            kernel_size=kernel_size,
+            strides=strides,
+            kernel_dilation=first_dilation,
             padding=padding,
             use_bias=use_bias,
             rngs=rngs,
         )
         norm_layer = norm_layer or nnx.BatchNorm
         self.bn = norm_layer(num_features=out_channels, rngs=rngs)
-
+ 
     def __call__(self, x: jax.Array) -> jax.Array:
         x = self.conv(x)
         x = self.bn(x)
         return x
-
-
+ 
+ 
 class AntiAliasingLayer(nnx.Module):
     def __init__(
         self,
         aa_layer: LayerType,
-        strides: Tuple[int] = (2, 2),
-        window_shape: Tuple[int] = (2, 2),
+        strides: Tuple[int, int] = (2, 2),
+        window_shape: Tuple[int, int] = (2, 2),
         enable: bool = True,
         padding: str = "VALID",
         noop: Optional[Type[nnx.Module]] = nnx.identity,
     ) -> None:
+        if isinstance(strides, int):
+            strides = (strides, strides)
+ 
         self.pooling = True
         if not aa_layer or not enable:
             self.pooling = False
             aa_layer = noop if noop is not None else None
-
         elif isinstance(aa_layer, str):
             aa_layer = aa_layer.lower().replace("_", "").replace("-", "")
-            if aa_layer == "avg" or aa_layer == "avgpool":
+            if aa_layer in ("avg", "avgpool"):
                 aa_layer = nnx.avg_pool
             else:
-                assert False, f"Unknown anti-aliasing layer ({aa_layer})."
-
+                raise ValueError(f"Unknown anti-aliasing layer ({aa_layer}).")
+ 
         self.pool = aa_layer
         self.window_shape = window_shape
         self.strides = strides
         self.padding = padding
-
-    def __call__(self, x):
+ 
+    def __call__(self, x: jax.Array) -> jax.Array:
         if self.pooling:
             return self.pool(
                 inputs=x,
@@ -97,26 +145,30 @@ class AntiAliasingLayer(nnx.Module):
                 padding=self.padding,
             )
         return self.pool(x)
-
-
+ 
+ 
 class AdaptiveAvgPool2D(nnx.Module):
-    def __init__(self, output_size: Union[int, Tuple[int]]) -> None:
-        self.output_size = output_size
-
-    def __call__(self, x):
+    def __init__(self, output_size: Union[int, Tuple[int, int]]) -> None:
+        if isinstance(output_size, int):
+            output_size = (output_size, output_size)
+        self.output_size: Tuple[int, int] = output_size
+ 
+    def __call__(self, x: jax.Array) -> jax.Array:
         _, input_height, input_width, _ = x.shape
-
+ 
         h_stride = input_height // self.output_size[0]
         w_stride = input_width // self.output_size[1]
-
+ 
         h_kernel = input_height - (self.output_size[0] - 1) * h_stride
         w_kernel = input_width - (self.output_size[1] - 1) * w_stride
-
+ 
         return nnx.avg_pool(
-            x, window_shape=(h_kernel, w_kernel), strides=(h_stride, w_stride)
+            x,
+            window_shape=(h_kernel, w_kernel),
+            strides=(h_stride, w_stride),
         )
-
-
+ 
+ 
 class Classifier(nnx.Module):
     def __init__(
         self, num_pooled_features: int, num_classes: int, *, rngs: nnx.Rngs
@@ -126,28 +178,27 @@ class Classifier(nnx.Module):
         self.fc = nnx.Linear(
             in_features=num_pooled_features, out_features=num_classes, rngs=rngs
         )
-
-    def __call__(self, x):
-        x = self.fc(x)
-        return x
-
-
+ 
+    def __call__(self, x: jax.Array) -> jax.Array:
+        return self.fc(x)
+ 
+ 
 class BasicBlock(nnx.Module):
     expansion: int = 1
-
+ 
     def __init__(
         self,
         inplanes: int,
         planes: int,
-        strides: int = 1,
+        strides: Tuple[int, int] = (1, 1),
         downsample: Optional[nnx.Module] = None,
         cardinality: int = 1,
         base_width: int = 64,
         reduce_first: int = 1,
-        dilation: int = 1,
+        dilation: Tuple[int, int] = (1, 1),
         *,
         rngs: nnx.Rngs,
-        first_dilation: Optional[int] = None,
+        first_dilation: Optional[Tuple[int, int]] = None,
         act_layer: Type[nnx.Module] = nnx.relu,
         norm_layer: Type[nnx.Module] = nnx.BatchNorm,
         attn_layer: Optional[Callable] = None,
@@ -157,19 +208,21 @@ class BasicBlock(nnx.Module):
     ) -> None:
         assert cardinality == 1, "BasicBlock only supports cardinality of 1"
         assert base_width == 64, "BasicBlock does not support changing base width"
-
+ 
         first_planes = planes // reduce_first
         out_planes = planes * self.expansion
         first_dilation = first_dilation or dilation
-        use_aa = aa_layer is not None and (strides == 2 or first_dilation != dilation)
-
+        use_aa = aa_layer is not None and (
+            strides[0] == 2 or first_dilation[0] != dilation[0]
+        )
+ 
         self.conv1 = nnx.Conv(
             in_features=inplanes,
             out_features=first_planes,
             kernel_size=(3, 3),
-            strides=1 if use_aa else strides,
-            padding=(first_dilation, first_dilation),
-            kernel_dilation=(first_dilation, first_dilation),
+            strides=(1, 1) if use_aa else strides,
+            padding=first_dilation,
+            kernel_dilation=first_dilation,
             use_bias=False,
             rngs=rngs,
         )
@@ -179,69 +232,69 @@ class BasicBlock(nnx.Module):
         )
         self.act1 = Activation(act_layer)
         self.aa = AntiAliasingLayer(aa_layer, strides=strides, enable=use_aa)
-
+ 
         self.conv2 = nnx.Conv(
             in_features=first_planes,
             out_features=out_planes,
             kernel_size=(3, 3),
             strides=(1, 1),
-            padding=(dilation, dilation),
-            kernel_dilation=(dilation, dilation),
+            padding=dilation,
+            kernel_dilation=dilation,
             use_bias=False,
             rngs=rngs,
         )
         self.bn2 = norm_layer(num_features=out_planes, rngs=rngs)
-
+ 
         self.se = attn_layer(out_planes, rngs=rngs) if attn_layer is not None else None
         self.act2 = Activation(act_layer)
         self.downsample = downsample
         self.strides = strides
         self.dilation = dilation
         self.drop_path = drop_path
-
-    def __call__(self, x: jax.Array) -> jax.Array:
+ 
+    def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         shortcut = x
-
+ 
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.drop_block(x)
         x = self.act1(x)
         x = self.aa(x)
-
+ 
         x = self.conv2(x)
         x = self.bn2(x)
-
+ 
         if self.se is not None:
             x = self.se(x)
-
+ 
         if self.drop_path is not None:
-            x = self.drop_path(x)
-
+            x = self.drop_path(x, training=training)
+ 
         if self.downsample is not None:
             shortcut = self.downsample(shortcut)
-
+ 
         x = x + shortcut
         x = self.act2(x)
-
+ 
         return x
-
-
+ 
+ 
 class Bottleneck(nnx.Module):
     expansion: int = 4
-
+ 
     def __init__(
         self,
         inplanes: int,
         planes: int,
-        strides: int = 1,
+        strides: Tuple[int, int] = (1, 1),
         downsample: Optional[nnx.Module] = None,
         cardinality: int = 1,
         base_width: int = 64,
         reduce_first: int = 1,
-        dilation: int = 1,
+        dilation: Tuple[int, int] = (1, 1),
         *,
         rngs: nnx.Rngs,
-        first_dilation: Optional[int] = None,
+        first_dilation: Optional[Tuple[int, int]] = None,
         act_layer: Type[nnx.Module] = nnx.relu,
         norm_layer: Type[nnx.Module] = nnx.BatchNorm,
         attn_layer: Optional[Callable] = None,
@@ -253,11 +306,10 @@ class Bottleneck(nnx.Module):
         first_planes = width // reduce_first
         out_planes = planes * self.expansion
         first_dilation = first_dilation or dilation
-        strides = to_ntuple(2)(strides)
         use_aa = aa_layer is not None and (
-            strides[0] == 2 or first_dilation != dilation
+            strides[0] == 2 or first_dilation[0] != dilation[0]
         )
-
+ 
         self.conv1 = nnx.Conv(
             in_features=inplanes,
             out_features=first_planes,
@@ -267,14 +319,14 @@ class Bottleneck(nnx.Module):
         )
         self.bn1 = norm_layer(num_features=first_planes, rngs=rngs)
         self.act1 = Activation(act_layer)
-
+ 
         self.conv2 = nnx.Conv(
             in_features=first_planes,
             out_features=width,
             kernel_size=(3, 3),
             strides=(1, 1) if use_aa else strides,
-            padding=(first_dilation, first_dilation),
-            kernel_dilation=(first_dilation, first_dilation),
+            padding=first_dilation,
+            kernel_dilation=first_dilation,
             feature_group_count=cardinality,
             use_bias=False,
             rngs=rngs,
@@ -285,7 +337,7 @@ class Bottleneck(nnx.Module):
         )
         self.act2 = Activation(act_layer)
         self.aa = AntiAliasingLayer(aa_layer, strides=strides, enable=use_aa)
-
+ 
         self.conv3 = nnx.Conv(
             in_features=width,
             out_features=out_planes,
@@ -294,45 +346,45 @@ class Bottleneck(nnx.Module):
             rngs=rngs,
         )
         self.bn3 = norm_layer(num_features=out_planes, rngs=rngs)
-
+ 
         self.se = attn_layer(out_planes, rngs=rngs) if attn_layer is not None else None
         self.act3 = Activation(act_layer)
         self.downsample = downsample
         self.strides = strides
         self.dilation = dilation
         self.drop_path = drop_path
-
-    def __call__(self, x: jax.Array) -> jax.Array:
+ 
+    def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         shortcut = x
-
+ 
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.act1(x)
-
+ 
         x = self.conv2(x)
         x = self.bn2(x)
         x = self.drop_block(x)
         x = self.act2(x)
         x = self.aa(x)
-
+ 
         x = self.conv3(x)
         x = self.bn3(x)
-
+ 
         if self.se is not None:
             x = self.se(x)
-
+ 
         if self.drop_path is not None:
-            x = self.drop_path(x)
-
+            x = self.drop_path(x, training=training)
+ 
         if self.downsample is not None:
             shortcut = self.downsample(shortcut)
-
+ 
         x = x + shortcut
         x = self.act3(x)
-
+ 
         return x
-
-
+ 
+ 
 class DropPath(nnx.Module):
     def __init__(
         self,
@@ -344,47 +396,45 @@ class DropPath(nnx.Module):
         self.drop_prob = drop_prob
         self.scale_by_keep = scale_by_keep
         self.rngs = rngs
-
+ 
     def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         if self.drop_prob == 0.0 or not training:
             return x
-
+ 
         keep_prob = 1 - self.drop_prob
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)
         key = self.rngs.dropout() if self.rngs is not None else jax.random.PRNGKey(0)
         random_tensor = jax.random.bernoulli(key, keep_prob, shape)
-
+ 
         if keep_prob > 0.0 and self.scale_by_keep:
             random_tensor = random_tensor / keep_prob
-
+ 
         return x * random_tensor
-
-
+ 
+ 
 def downsample_avg(
     in_channels: int,
     out_channels: int,
-    kernel_size: Union[int, Tuple[int]],
-    strides: Union[int, Tuple[int]] = 1,
-    dilation: Union[int, Tuple[int]] = 1,
-    first_dilation: Optional[int] = None,
+    kernel_size: Tuple[int, int],
+    strides: Tuple[int, int] = (1, 1),
+    dilation: Tuple[int, int] = (1, 1),
+    first_dilation: Optional[Tuple[int, int]] = None,
     norm_layer: Optional[Type[nnx.Module]] = None,
-    padding: Union[str, Tuple[int]] = "SAME",
+    padding: Union[str, Tuple[int, int]] = "SAME",
     use_bias: bool = False,
     *,
     rngs: nnx.Rngs,
 ) -> nnx.Module:
-    # first_dilation, padding kept for call-site compat with Downsample
     norm_layer = norm_layer or nnx.BatchNorm
-    avg_stride = strides if dilation == 1 else 1
-    need_pool = avg_stride > 1 or (dilation > 1 and strides > 1)
-
+    avg_stride: Tuple[int, int] = strides if dilation == (1, 1) else (1, 1)
+    need_pool = avg_stride[0] > 1 or (dilation[0] > 1 and strides[0] > 1)
+ 
     class AvgDownsample(nnx.Module):
         def __init__(self):
             if need_pool:
-                pool_stride = to_ntuple(2)(avg_stride if avg_stride > 1 else 1)
                 self.pool = AvgPool2D(
                     kernel_size=(2, 2),
-                    strides=pool_stride,
+                    strides=avg_stride,
                     padding="SAME",
                 )
             else:
@@ -398,20 +448,20 @@ def downsample_avg(
                 rngs=rngs,
             )
             self.bn = norm_layer(num_features=out_channels, rngs=rngs)
-
+ 
         def __call__(self, x: jax.Array) -> jax.Array:
             if self.pool is not None:
                 x = self.pool(x)
             x = self.conv(x)
             x = self.bn(x)
             return x
-
+ 
     return AvgDownsample()
-
-
+ 
+ 
 def drop_blocks(drop_prob: float = 0.0) -> List[Optional[partial]]:
     """Generate per-stage DropBlock configs (4 stages).
-
+ 
     DropBlock is only applied to stages 3 and 4 (index 2, 3) following
     the original paper.
     """
@@ -421,10 +471,10 @@ def drop_blocks(drop_prob: float = 0.0) -> List[Optional[partial]]:
         partial(DropPath, drop_prob=drop_prob) if drop_prob else None,
         partial(DropPath, drop_prob=drop_prob) if drop_prob else None,
     ]
-
-
+ 
+ 
 def make_blocks(
-    block_fns: Tuple[Union[Type[BasicBlock], Type[Bottleneck]]],
+    block_fns: Tuple[Union[Type[BasicBlock], Type[Bottleneck]], ...],
     channels: Tuple[int, ...],
     block_repeats: Tuple[int, ...],
     inplanes: int,
@@ -441,25 +491,31 @@ def make_blocks(
     net_num_blocks = sum(block_repeats)
     net_block_idx = 0
     net_stride = 4
-    dilation = prev_dilation = 1
+    # dilation= and first_dilation= are used as
+    # padding= / kernel_dilation= in nnx.Conv.
+    dilation: Tuple[int, int] = (1, 1)
+    prev_dilation: Tuple[int, int] = (1, 1)
+ 
     for stage_idx, (block_fn, planes, num_blocks, db) in enumerate(
         zip(block_fns, channels, block_repeats, drop_blocks(drop_block_rate))
     ):
         stage_name = f"layer{stage_idx + 1}"
         stride = 1 if stage_idx == 0 else 2
         if net_stride >= output_stride:
-            dilation *= stride
+            dilation = (dilation[0] * stride, dilation[1] * stride)
             stride = 1
         else:
             net_stride *= stride
-
+ 
+        stride_t: Tuple[int, int] = to_ntuple(2)(stride)
+ 
         downsample = None
         if stride != 1 or inplanes != planes * block_fn.expansion:
             down_kwargs = dict(
                 in_channels=inplanes,
                 out_channels=planes * block_fn.expansion,
-                kernel_size=down_kernel_size,
-                strides=stride,
+                kernel_size=to_ntuple(2)(down_kernel_size),
+                strides=stride_t,
                 dilation=dilation,
                 first_dilation=prev_dilation,
                 norm_layer=kwargs.get("norm_layer"),
@@ -468,20 +524,24 @@ def make_blocks(
             downsample = (
                 downsample_avg(**down_kwargs) if avg_down else Downsample(**down_kwargs)
             )
-
+ 
         block_kwargs = dict(
             reduce_first=reduce_first, dilation=dilation, drop_block=db, **kwargs
         )
         blocks = []
         for block_idx in range(num_blocks):
             downsample = downsample if block_idx == 0 else None
-            stride = stride if block_idx == 0 else 1
-            block_dpr = drop_path_rate * net_block_idx / (net_num_blocks - 1)
+            block_stride: Tuple[int, int] = stride_t if block_idx == 0 else (1, 1)
+            block_dpr = (
+                drop_path_rate * net_block_idx / (net_num_blocks - 1)
+                if net_num_blocks > 1
+                else 0.0
+            )
             blocks.append(
                 block_fn(
                     inplanes,
                     planes,
-                    stride,
+                    block_stride,
                     downsample,
                     first_dilation=prev_dilation,
                     drop_path=DropPath(block_dpr) if block_dpr > 0.0 else None,
@@ -491,16 +551,120 @@ def make_blocks(
             prev_dilation = dilation
             inplanes = planes * block_fn.expansion
             net_block_idx += 1
-
+ 
         stages.append((stage_name, nnx.Sequential(*blocks)))
         feature_info.append(
             dict(num_chs=inplanes, reduction=net_stride, module=stage_name)
         )
-
+ 
     return stages, feature_info
+ 
+ 
+def _build_stem(
+    in_chans: int,
+    inplanes: int,
+    stem_width: int,
+    stem_type: str,
+    act_layer: LayerType,
+    norm_layer: LayerType,
+    rngs: nnx.Rngs,
+) -> nnx.Module:
+    """Build the stem conv block for all ResNet variants.
+ 
+    stem_type        widths (first, middle, final)    avg_down
 
-
+    "" / "b"        : normal 7x7 conv, out=64
+    "deep"          : (stem_width, stem_width, stem_width*2)
+                     c  stem_width=32  (32, 32, 64)
+                     d  stem_width=32  (32, 32, 64),  avg_down=True
+                     e  stem_width=64  (64, 64, 128), avg_down=True
+                     s  stem_width=64  (64, 64, 128)
+    "deep_tiered"   : (3*(sw//4), 3*(sw//2), sw*2)
+                     t  stem_width=32  (24, 48, 64),  avg_down=True
+    "deep_tieredn"  : (3*(sw//4), sw, sw*2)  - matches timm's formula exactly
+                      tn stem_width=32  (24, 32, 64),  avg_down=True
+    """
+    deep_stem = "deep" in stem_type
+ 
+    if deep_stem:
+        if "tiered" in stem_type:
+            # Isolate the optional "n" suffix after stripping known tokens.
+            suffix = (
+                stem_type.replace("deep", "")
+                         .replace("tiered", "")
+                         .replace("_", "")
+                         .strip()
+            )
+            if suffix == "n":
+                # tn: matches timm's formula (3*(sw//4), sw) -> (24, 32) for sw=32
+                stem_chs = (3 * (stem_width // 4), stem_width)
+            else:
+                # t: extended variant (3*(sw//4), 3*(sw//2)) -> (24, 48) for sw=32
+                stem_chs = (3 * (stem_width // 4), 3 * (stem_width // 2))
+        else:
+            # c / d / e / s
+            stem_chs = (stem_width, stem_width)
+ 
+        out_chs = stem_width * 2
+ 
+        return nnx.Sequential(
+            nnx.Conv(
+                in_features=in_chans,
+                out_features=stem_chs[0],
+                kernel_size=(3, 3),
+                strides=(2, 2),
+                padding=(1, 1),
+                use_bias=False,
+                rngs=rngs,
+            ),
+            norm_layer(num_features=stem_chs[0], rngs=rngs),
+            Activation(act_layer),
+            nnx.Conv(
+                in_features=stem_chs[0],
+                out_features=stem_chs[1],
+                kernel_size=(3, 3),
+                strides=(1, 1),
+                padding=(1, 1),
+                use_bias=False,
+                rngs=rngs,
+            ),
+            norm_layer(num_features=stem_chs[1], rngs=rngs),
+            Activation(act_layer),
+            nnx.Conv(
+                in_features=stem_chs[1],
+                out_features=out_chs,
+                kernel_size=(3, 3),
+                strides=(1, 1),
+                padding=(1, 1),
+                use_bias=False,
+                rngs=rngs,
+            ),
+        )
+    else:
+        return nnx.Conv(
+            in_features=in_chans,
+            out_features=inplanes,
+            kernel_size=(7, 7),
+            strides=(2, 2),
+            padding=(3, 3),
+            use_bias=False,
+            rngs=rngs,
+        )
+ 
+ 
 class ResNet(nnx.Module):
+    """ResNet / ResNeXt / SE-ResNeXt supporting variants b/c/d/e/s/t/tn.
+ 
+    Stem variant is selected via ``stem_type``:
+      ``""`` or ``"b"``   - normal 7x7 stem (stem_width ignored)
+      ``"deep"``          - variant c  (stem_width=32, widths 32-32-64)
+                          - variant d  (stem_width=32, widths 32-32-64,  avg_down=True)
+                          - variant e  (stem_width=64, widths 64-64-128, avg_down=True)
+                          - variant s  (stem_width=64, widths 64-64-128)
+      ``"deep_tiered"``   - variant t  (stem_width=32, widths 24-48-64, avg_down=True)
+      ``"deep_tieredn"``  - variant tn (stem_width=32, widths 24-32-64, avg_down=True)
+    """
+ 
     def __init__(
         self,
         block: Union[Type[BasicBlock], Type[Bottleneck]],
@@ -535,60 +699,25 @@ class ResNet(nnx.Module):
         self.drop_rate = drop_rate
         self.global_pool_type = global_pool
         self.grad_checkpointing = False
-
+ 
+        norm_layer = get_norm_layer(norm_layer)
+ 
         deep_stem = "deep" in stem_type
         inplanes = stem_width * 2 if deep_stem else 64
-        if deep_stem:
-            stem_chs = (stem_width, stem_width)
-            if "tiered" in stem_type:
-                stem_chs = (3 * (stem_width // 4), stem_width)
-            self.conv1 = nnx.Sequential(
-                nnx.Conv(
-                    in_features=in_chans,
-                    out_features=stem_chs[0],
-                    kernel_size=(3, 3),
-                    strides=(2, 2),
-                    padding=(1, 1),
-                    use_bias=False,
-                    rngs=rngs,
-                ),
-                norm_layer(num_features=stem_chs[0], rngs=rngs),
-                Activation(act_layer),
-                nnx.Conv(
-                    in_features=stem_chs[0],
-                    out_features=stem_chs[1],
-                    kernel_size=(3, 3),
-                    strides=(1, 1),
-                    padding=(1, 1),
-                    use_bias=False,
-                    rngs=rngs,
-                ),
-                norm_layer(num_features=stem_chs[1], rngs=rngs),
-                Activation(act_layer),
-                nnx.Conv(
-                    in_features=stem_chs[1],
-                    out_features=inplanes,
-                    kernel_size=(3, 3),
-                    strides=(1, 1),
-                    padding=(1, 1),
-                    use_bias=False,
-                    rngs=rngs,
-                ),
-            )
-        else:
-            self.conv1 = nnx.Conv(
-                in_features=in_chans,
-                out_features=inplanes,
-                kernel_size=(7, 7),
-                strides=(2, 2),
-                padding=(3, 3),
-                use_bias=False,
-                rngs=rngs,
-            )
+ 
+        self.conv1 = _build_stem(
+            in_chans=in_chans,
+            inplanes=inplanes,
+            stem_width=stem_width,
+            stem_type=stem_type,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+            rngs=rngs,
+        )
         self.bn1 = norm_layer(num_features=inplanes, rngs=rngs)
         self.act1 = Activation(act_layer)
         self.feature_info = [dict(num_chs=inplanes, reduction=2, module="act1")]
-
+ 
         # Stem pooling
         if replace_stem_pool:
             self.maxpool = nnx.Sequential(
@@ -608,15 +737,19 @@ class ResNet(nnx.Module):
             if aa_layer is not None:
                 self.maxpool = nnx.Sequential(
                     MaxPool2D(
-                        kernel_size=(3, 3), strides=(1, 1), padding=((1, 1), (1, 1))
+                        kernel_size=(3, 3),
+                        strides=(1, 1),
+                        padding=((1, 1), (1, 1)),
                     ),
                     AntiAliasingLayer(aa_layer, strides=(2, 2)),
                 )
             else:
                 self.maxpool = MaxPool2D(
-                    kernel_size=(3, 3), strides=(2, 2), padding=((1, 1), (1, 1))
+                    kernel_size=(3, 3),
+                    strides=(2, 2),
+                    padding=((1, 1), (1, 1)),
                 )
-
+ 
         block_fns = to_ntuple(len(channels))(block)
         stage_modules, stage_feature_info = make_blocks(
             block_fns,
@@ -637,167 +770,118 @@ class ResNet(nnx.Module):
             **block_args,
             rngs=rngs,
         )
-        self.stage_modules = nnx.List([m for i, m in stage_modules])
+        self.stage_modules = nnx.List([m for _, m in stage_modules])
         self.feature_info += stage_feature_info
         self.num_features = self.head_hidden_size = (
             channels[-1] * block_fns[-1].expansion
         )
         self.global_pool = AdaptiveAvgPool2D(output_size=(1, 1))
+        self.head_drop = (
+            nnx.Dropout(rate=drop_rate, rngs=rngs) if drop_rate > 0.0 else None
+        )
         self.fc = Classifier(self.num_features, self.num_classes, rngs=rngs)
-
-        # Zero-init the last BN in each residual branch so that each
-        # residual block behaves like an identity at init.
+ 
         if zero_init_last:
             for module in self.stage_modules:
                 for block in module.layers:
                     if hasattr(block, "bn3"):
-                        # Bottleneck: zero-init bn3.scale
                         block.bn3.scale.value = jnp.zeros_like(block.bn3.scale.value)
                     elif hasattr(block, "bn2"):
-                        # BasicBlock: zero-init bn2.scale
                         block.bn2.scale.value = jnp.zeros_like(block.bn2.scale.value)
-
+ 
     def _feature_take_indices(
         self,
         indices: Optional[Union[int, Tuple[int, ...]]] = None,
     ) -> Tuple[Tuple[int, ...], int]:
-        """Resolve feature indices to absolute (non-negative) positions.
-
-        Mirrors JaxNN's ``feature_take_indices`` helper.
-
-        Args:
-            indices: ``None`` -> all stages, ``int`` -> last-N stages,
-                     tuple of ints -> explicit stages (negative allowed).
-
-        Returns:
-            ``(take_indices, max_index)`` where indices are in ``0..num_stages``.
-            Stage 0 is the stem output; stages 1-4 are the residual stages.
-        """
-        num_features = len(self.feature_info)  # stem + 4 stages = 5
-
+        num_features = len(self.feature_info)
+ 
         if indices is None:
             take = tuple(range(num_features))
             return take, num_features - 1
-
+ 
         if isinstance(indices, int):
-            # last-N semantics
             assert 0 < indices <= num_features, (
                 f"last-n ({indices}) out of range (1..{num_features})"
             )
             take = tuple(range(num_features - indices, num_features))
             return take, num_features - 1
-
-        # Explicit tuple - resolve negative indices
+ 
         take = tuple(num_features + i if i < 0 else i for i in indices)
         assert all(0 <= i < num_features for i in take), (
             f"index out of range (0..{num_features - 1}): {take}"
         )
         return take, max(take)
-
+ 
     def forward_intermediates(
         self,
         x: jax.Array,
         indices: Optional[Union[int, Tuple[int, ...]]] = None,
         stop_early: bool = False,
         intermediates_only: bool = False,
+        training: bool = False,
     ) -> Union[List[jax.Array], Tuple[jax.Array, List[jax.Array]]]:
-        """Forward pass that returns intermediate feature maps.
-
-        Index 0 = stem output (after act1, before maxpool).
-        Indices 1-4 = outputs of residual stages 1-4.
-
-        Args:
-            x: Input tensor ``(N, H, W, C)``.
-            indices: Which stages to collect.
-                ``None`` -> all 5 (stem + 4 stages).
-                ``int``  -> last-N stages.
-                ``tuple`` -> explicit stage indices (negative indices supported).
-            stop_early: Stop the forward pass once the last required stage is
-                reached, skipping later stages. Useful when only early features
-                are needed.
-            intermediates_only: If True return only the list of intermediate
-                feature maps without the final feature map.
-
-        Returns:
-            ``[intermediates]`` if ``intermediates_only=True``,
-            otherwise ``(final_feature_map, [intermediates])``.
-        """
         take_indices, max_index = self._feature_take_indices(indices)
         take_set = set(take_indices)
         intermediates: List[jax.Array] = []
-
-        # Stem (index 0)
+ 
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.act1(x)
         if 0 in take_set:
             intermediates.append(x)
         x = self.maxpool(x)
-
-        # Residual stages (indices 1..4)
+ 
         for i, layer in enumerate(self.stage_modules):
             stage_idx = i + 1
             x = layer(x)
             if stage_idx in take_set:
                 intermediates.append(x)
             if stop_early and stage_idx >= max_index:
-                # Pad remaining slots with the last feature map so callers
-                # always receive len(take_indices) tensors.
                 remaining = sum(1 for t in take_indices if t > stage_idx)
                 intermediates.extend([x] * remaining)
                 break
-
+ 
         if intermediates_only:
             return intermediates
         return x, intermediates
-
+ 
     def prune_intermediate_layers(
         self,
         indices: Union[int, Tuple[int, ...]] = 1,
         prune_head: bool = True,
     ) -> Tuple[int, ...]:
-        """Remove stages not needed to produce the requested intermediates.
-
-        Replaces unused residual stages with identity functions, reducing
-        compute when only early features are needed.
-
-        Args:
-            indices: Same semantics as ``forward_intermediates``.
-            prune_head: Also remove the classifier head (pool + fc).
-
-        Returns:
-            The resolved absolute take-indices that were kept.
-        """
         take_indices, max_index = self._feature_take_indices(indices)
-        # Replace stages beyond max_index with identity
-        for i in range(max_index, len(self.stage_modules)):
+        for i in range(max_index + 1, len(self.stage_modules)):
             self.stage_modules[i] = nnx.Sequential(nnx.identity)
         if prune_head:
             self.global_pool = nnx.identity
             self.fc = nnx.identity
         return take_indices
-
-    def forward_features(self, x: jax.Array) -> jax.Array:
+ 
+    def forward_features(self, x: jax.Array, training: bool = False) -> jax.Array:
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.act1(x)
         x = self.maxpool(x)
         for layer in self.stage_modules:
-            x = layer(x)
+            x = layer(x, training=training)
         return x
-
-    def forward_head(self, x: jax.Array, pre_logits: bool = False) -> jax.Array:
+ 
+    def forward_head(
+        self, x: jax.Array, pre_logits: bool = False, training: bool = False
+    ) -> jax.Array:
         x = self.global_pool(x)
+        x = x.reshape(x.shape[0], -1)
         if pre_logits:
             return x
-        if self.drop_rate > 0.0:
-            x = nnx.Dropout(rate=self.drop_rate, deterministic=True)(x)
+        if self.head_drop is not None:
+            x = self.head_drop(x, deterministic=not training)
         x = self.fc(x)
         return x
-
-    def __call__(self, x: jax.Array) -> jax.Array:
-        x = self.forward_features(x)
-        x = self.forward_head(x)
+ 
+    def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
+        x = self.forward_features(x, training=training)
+        x = self.forward_head(x, training=training)
         return x
 
 
@@ -889,6 +973,17 @@ def _r3cfg(url: str = "", **kwargs) -> Dict[str, Any]:
     )
 
 
+def _ra4cfg(url: str = "", **kwargs) -> Dict[str, Any]:
+    """Config for the ra4/e3600 training series.
+
+    These models use mean=(0.5, 0.5, 0.5) / std=(0.5, 0.5, 0.5) and crop_pct=0.9.
+    Using standard ImageNet stats instead is the most common cause of output
+    mismatch when comparing against timm for this checkpoint family.
+    """
+    return _rcfg(url=url, **dict(
+        {"mean": (0.5, 0.5, 0.5), "std": (0.5, 0.5, 0.5), "crop_pct": 0.9},
+        **kwargs))
+
 def _gcfg(url: str = "", **kwargs) -> Dict[str, Any]:
     return _cfg(
         url=url,
@@ -953,7 +1048,16 @@ default_cfgs = generate_default_cfgs(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.tv_in1k",
         ),
-        "resnet18d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
+        "resnet18d.ra4_e3600_r224_in1k": _ra4cfg(
+            hf_hub_id="JaxNN/",
+            url="JaxNN/ra4_e3600_r224_in1k.tv_in1k",
+            first_conv="conv1.0"
+        ),
+        "resnet18d.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="JaxNN/resnet18d.ra2_in1k",
+            first_conv="conv1.0",
+        ),
         "resnet34.a1_in1k": _rcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.a1_in1k",
@@ -966,33 +1070,107 @@ default_cfgs = generate_default_cfgs(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.a3_in1k",
         ),
-        "resnet34.bt_in1k": _ttcfg(hf_hub_id="JaxNN/"),
-        "resnet34.gluon_in1k": _gcfg(hf_hub_id="JaxNN/"),
-        "resnet34.tv_in1k": _cfg(hf_hub_id="JaxNN/"),
-        "resnet34d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
+        "resnet34.bt_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet34.bt_in1k",
+        ),
+        "resnet34.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet34.gluon_in1k",
+        ),
+        "resnet34.tv_in1k": _cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet34.tv_in1k",
+        ),
+        "resnet34d.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet34.ra2_in1k",
+        ),
+        "resnet34.ra4_e3600_r224_in1k": _ra4cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet34.ra4_e3600_r224_in1k",
+        ),
         # ResNet (Bottleneck)
-        "resnet26.bt_in1k": _ttcfg(hf_hub_id="JaxNN/"),
-        "resnet26d.bt_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet26t.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet50.a1_in1k": _rcfg(hf_hub_id="JaxNN/"),
+        "resnet26.bt_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet26.bt_in1k",
+        ),
+        "resnet26d.bt_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet26d.bt_in1k",
+        ),
+        "resnet26t.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet26t.ra2_in1k",
+        ),
+        "resnet50.a1_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.a1_in1k",
+        ),
         "resnet50.a1h_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.a2_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.a3_in1k": _r3cfg(hf_hub_id="JaxNN/"),
-        "resnet50.b1k_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.b2k_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.bt_in1k": _ttcfg(hf_hub_id="JaxNN/"),
-        "resnet50.c1_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.c2_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.d_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet50.ram_in1k": _ttcfg(hf_hub_id="JaxNN/"),
-        "resnet50.am_in1k": _tcfg(hf_hub_id="JaxNN/"),
-        "resnet50.ra_in1k": _ttcfg(hf_hub_id="JaxNN/"),
-        "resnet50.fb_ssl_yfcc100m_ft_in1k": _cfg(hf_hub_id="JaxNN/"),
+        "resnet50.a2_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.a2_in1k",
+        ),
+        "resnet50.a3_in1k": _r3cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.a3_in1k",
+        ),
+        "resnet50.b1k_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.b1k_in1k",
+        ),
+        "resnet50.b2k_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.b2k_in1k",
+        ),
+        "resnet50.bt_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.bt_in1k",
+        ),
+        "resnet50.c1_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.c1_in1k",
+        ),
+        "resnet50.c2_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.c2_in1k",
+        ),
+        "resnet50.d_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.d_in1k",
+        ),
+        "resnet50.ram_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.ram_in1k",
+        ),
+        "resnet50.am_in1k": _tcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.am_in1k",
+        ),
+        "resnet50.ra_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.ra_in1k",
+        ),
+        "resnet50.fb_ssl_yfcc100m_ft_in1k": _cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.fb_ssl_yfcc100m_ft_in1k",
+        ),
         "resnet50.fb_swsl_ig1b_ft_in1k": _cfg(hf_hub_id="JaxNN/"),
-        "resnet50.gluon_in1k": _gcfg(hf_hub_id="JaxNN/"),
-        "resnet50.tv_in1k": _cfg(hf_hub_id="JaxNN/"),
+        "resnet50.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.gluon_in1k",
+        ),
+        "resnet50.tv_in1k": _cfg(
+            hf_hub_id="JaxNN/", 
+            url="https://huggingface.co/JaxNN/resnet50.tv_in1k",
+        ),
         "resnet50.tv2_in1k": _cfg(
             hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50.tv2_in1k",
             input_size=(176, 176, 3),
             pool_size=(6, 6),
             test_input_size=(224, 224, 3),
@@ -1000,22 +1178,71 @@ default_cfgs = generate_default_cfgs(
             interpolation="bilinear",
             crop_pct=0.875,
         ),
-        "resnet50c.gluon_in1k": _gcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet50d.a1_in1k": _rcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet50d.a2_in1k": _rcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet50d.a3_in1k": _r3cfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet50d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet50d.ra4_e3600_r224_in1k": _ttcfg(
+        "resnet50c.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet50c.gluon_in1k",
+        ),
+        "resnet50d.a1_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet50d.a1_in1k",
+        ),
+        "resnet50d.a2_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet50d.a2_in1k",
+        ),
+        "resnet50d.a3_in1k": _r3cfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet50d.a3_in1k",
+        ),
+        "resnet50d.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet50d.ra2_in1k",
+        ),
+        "resnet50d.ra4_e3600_r224_in1k": _ra4cfg(
             hf_hub_id="JaxNN/", first_conv="conv1.0"
         ),
-        "resnet50s.gluon_in1k": _gcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
+        "resnet50s.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet50s.gluon_in1k",
+        ),
+        "resnet50d.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50d.gluon_in1k",
+            first_conv="conv1.0"
+        ),
         "resnet50t.untrained": _ttcfg(first_conv="conv1.0"),
-        "resnet101.a1_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet101.a1h_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet101.a2_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet101.a3_in1k": _r3cfg(hf_hub_id="JaxNN/"),
+        "resnet101.a1_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.a1_in1k",
+        ),
+        "resnet101.a1h_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.a1h_in1k",
+        ),
+        "resnet101.a2_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.a2_in1k",
+        ),
+        "resnet101.a3_in1k": _r3cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.a3_in1k",
+        ),
+        
+        "resnet101.tv_in1k": _cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.tv_in1k",
+            license="bsd-3-clause",
+            origin_url="https://github.com/pytorch/vision",
+        ),
         "resnet101.tv2_in1k": _cfg(
             hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.tv2_in1k",
             input_size=(176, 176, 3),
             pool_size=(6, 6),
             test_input_size=(224, 224, 3),
@@ -1023,17 +1250,53 @@ default_cfgs = generate_default_cfgs(
             interpolation="bilinear",
             crop_pct=0.875,
         ),
-        "resnet101.gluon_in1k": _gcfg(hf_hub_id="JaxNN/"),
-        "resnet101c.gluon_in1k": _gcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet101d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet101s.gluon_in1k": _gcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet152.a1_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet152.a1h_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet152.a2_in1k": _rcfg(hf_hub_id="JaxNN/"),
-        "resnet152.a3_in1k": _r3cfg(hf_hub_id="JaxNN/"),
-        "resnet152.gluon_in1k": _gcfg(hf_hub_id="JaxNN/"),
+        "resnet101.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101.gluon_in1k",
+        ),
+        "resnet101c.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            url="https://huggingface.co/JaxNN/resnet101c.gluon_in1k",
+        ),
+        "resnet101d.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101d.gluon_in1k",
+            first_conv="conv1.0",
+        ),
+        "resnet101d.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101d.ra2_in1k",
+            first_conv="conv1.0",
+        ),
+        "resnet101s.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet101s.gluon_in1k",
+            first_conv="conv1.0",
+        ),
+        "resnet152.a1_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.a1_in1k",
+        ),
+        "resnet152.a1h_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.a1h_in1k",
+        ),
+        "resnet152.a2_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.a2_in1k",
+        ),
+        "resnet152.a3_in1k": _r3cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.a3_in1k",
+        ),
+        "resnet152.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.gluon_in1k",
+        ),
         "resnet152.tv2_in1k": _cfg(
             hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.tv2_in1k",
             input_size=(176, 176, 3),
             pool_size=(6, 6),
             test_input_size=(224, 224, 3),
@@ -1041,9 +1304,32 @@ default_cfgs = generate_default_cfgs(
             interpolation="bilinear",
             crop_pct=0.875,
         ),
-        "resnet152c.gluon_in1k": _gcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet152d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
-        "resnet152s.gluon_in1k": _gcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
+        "resnet152.tv_in1k": _cfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152.tv_in1k",
+            license="bsd-3-clause",
+            origin_url="https://github.com/pytorch/vision"
+        ),
+        "resnet152c.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152c.gluon_in1k",
+            first_conv="conv1.0",
+        ),
+        "resnet152d.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152d.gluon_in1k",
+            first_conv="conv1.0",
+        ),
+        "resnet152d.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152d.ra2_in1k",
+            first_conv="conv1.0",
+        ),
+        "resnet152s.gluon_in1k": _gcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet152s.gluon_in1k",
+            first_conv="conv1.0"
+        ),
         "resnet200.untrained": _ttcfg(),
         "resnet200d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
         # Wide ResNet
@@ -1066,7 +1352,13 @@ default_cfgs = generate_default_cfgs(
             interpolation="bilinear",
             crop_pct=0.875,
         ),
+        
         # ResNeXt
+        "resnet50_gn.a1h_in1k": _ttcfg(
+            hf_hub_id="JaxNN/",
+            url="https://huggingface.co/JaxNN/resnet50_gn.a1h_in1k",
+            crop_pct=0.94
+        ),
         "resnext50_32x4d.a1_in1k": _rcfg(hf_hub_id="JaxNN/"),
         "resnext50_32x4d.a1h_in1k": _rcfg(hf_hub_id="JaxNN/"),
         "resnext50_32x4d.a2_in1k": _rcfg(hf_hub_id="JaxNN/"),
@@ -1550,6 +1842,13 @@ def wide_resnet101_2(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # ResNeXt
+@register_model
+def resnet50_gn(pretrained: bool = False, **kwargs) -> ResNet:
+    """Constructs a ResNet-50 model w/ GroupNorm
+    """
+    model_args = dict(block=Bottleneck, layers=(3, 4, 6, 3), norm_layer='groupnorm')
+    return _create_resnet('resnet50_gn', pretrained, **dict(model_args, **kwargs))
+
 
 @register_model
 def resnext50_32x4d(pretrained: bool = False, **kwargs) -> ResNet:
