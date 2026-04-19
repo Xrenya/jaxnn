@@ -1,12 +1,7 @@
-"""Transform factory — mirrors timm.data.transforms_factory for eval.
-
-Uses the torchvision-backed ``ImagenetEvalTransform`` so resize/crop results
-are pixel-for-pixel identical to timm.
+"""Transform factory
 
 Usage
------
-::
-
+-------------
     from jaxnn.data import create_transform, resolve_data_config
     import jax.numpy as jnp
 
@@ -153,7 +148,7 @@ def create_transform(
             stacklevel=2,
         )
 
-    crop_pct  = crop_pct  if crop_pct  is not None else DEFAULT_CROP_PCT
+    crop_pct = crop_pct  if crop_pct  is not None else DEFAULT_CROP_PCT
     crop_mode = crop_mode if crop_mode is not None else DEFAULT_CROP_MODE
 
     return ImagenetEvalTransform(
