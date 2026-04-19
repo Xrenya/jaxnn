@@ -2,6 +2,7 @@
 
 Hacked together by / Copyright 2026 Rinat Shaymukhametov
 """
+
 from typing import Optional, Tuple, Type, Union, Callable, Sequence
 
 import jax

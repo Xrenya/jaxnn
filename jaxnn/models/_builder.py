@@ -16,8 +16,6 @@ from jaxnn.models._features import FeatureGetterNet
 
 _logger = logging.getLogger(__name__)
 
-# Global variables for rarely used pretrained checkpoint download progress and hash check.
-# Use set_pretrained_download_progress / set_pretrained_check_hash functions to toggle.
 _DOWNLOAD_PROGRESS = False
 _CHECK_HASH = False
 
@@ -33,18 +31,109 @@ __all__ = [
 
 
 def set_pretrained_download_progress(enable=True):
-    """Set download progress for pretrained weights."""
     global _DOWNLOAD_PROGRESS
     _DOWNLOAD_PROGRESS = enable
 
 
 def set_pretrained_check_hash(enable=True):
-    """Set hash checking for pretrained weights."""
     global _CHECK_HASH
     _CHECK_HASH = enable
 
 
-ModelT = TypeVar("ModelT", bound=nnx.Module)  # any subclass of nn.Module
+ModelT = TypeVar("ModelT", bound=nnx.Module)
+
+
+# Config loading from local checkpoint directory
+def _load_config_from_checkpoint(
+    checkpoint_path: Union[str, Path],
+) -> Optional[Dict[str, Any]]:
+    """Read config.json from a local JaxNN checkpoint directory.
+
+    The converter saves a config.json alongside every Orbax checkpoint.
+    That file is the authoritative source for preprocessing metadata
+    (mean, std, input_size, crop_pct, …) for that specific checkpoint.
+
+    Accepts:
+        - The model directory containing config.json and state/
+        - The state/ subdirectory (looks one level up for config.json)
+        - A path to config.json directly
+
+    Returns the parsed dict, or None if not found.
+    """
+    p = Path(checkpoint_path)
+    candidates = [
+        p / "config.json",  # model dir given
+        p,  # config.json itself given
+        p.parent / "config.json",  # state/ subdir given
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.suffix == ".json":
+                with open(candidate) as f:
+                    cfg = json.load(f)
+                _logger.info("Loaded pretrained config from %s", candidate)
+                return cfg
+        except (OSError, json.JSONDecodeError) as e:
+            _logger.debug("Could not read %s: %s", candidate, e)
+    return None
+
+
+def _merge_checkpoint_cfg(
+    pretrained_cfg: PretrainedCfg,
+    checkpoint_path: Union[str, Path],
+) -> PretrainedCfg:
+    """Merge config.json from a local checkpoint into a PretrainedCfg.
+
+    Priority (highest wins):
+        1. Explicit pretrained_cfg_overlay set by the caller (applied later).
+        2. config.json from the checkpoint directory.
+        3. Registered default_cfgs entry.
+
+    The checkpoint config.json contains two layers:
+        - Top-level keys: num_classes, num_features, model_args, …
+        - Nested "pretrained_cfg" key: input_size, mean, std, crop_pct, …
+
+    Both are merged.  The local_dir key is also injected so that
+    _resolve_pretrained_source will point load_pretrained to the right place.
+    """
+    local_cfg = _load_config_from_checkpoint(checkpoint_path)
+    if local_cfg is None:
+        _logger.warning(
+            "checkpoint_path %r was given but no config.json was found — "
+            "using registered default pretrained_cfg (mean/std/input_size may "
+            "be wrong for this checkpoint).",
+            str(checkpoint_path),
+        )
+        # Still inject the local path so weight loading works
+        return dataclasses.replace(pretrained_cfg, local_dir=str(checkpoint_path))
+
+    # Flatten the two layers of config.json into a single overlay dict
+    overlay: Dict[str, Any] = {}
+
+    # Top-level fields that map directly to PretrainedCfg fields
+    _TOP_LEVEL_PASSTHROUGH = {
+        "num_classes",
+        "num_features",
+        "global_pool",
+        "architecture",
+    }
+    for k in _TOP_LEVEL_PASSTHROUGH:
+        if k in local_cfg:
+            overlay[k] = local_cfg[k]
+
+    # Nested "pretrained_cfg" block — the preprocessing metadata
+    nested = local_cfg.get("pretrained_cfg", {})
+    for k, v in nested.items():
+        overlay[k] = v
+
+    # Always point load_pretrained to the local directory
+    overlay["local_dir"] = str(checkpoint_path)
+
+    # Filter to only keys that PretrainedCfg actually accepts
+    valid_fields = {f.name for f in dataclasses.fields(PretrainedCfg)}
+    overlay = {k: v for k, v in overlay.items() if k in valid_fields}
+
+    return dataclasses.replace(pretrained_cfg, **overlay)
 
 
 def resolve_pretrained_cfg(
@@ -57,13 +146,11 @@ def resolve_pretrained_cfg(
     pretrained_tag = None
     if pretrained_cfg:
         if isinstance(pretrained_cfg, dict):
-            # pretrained_cfg dict passed as arg, validate by converting to PretrainedCfg
             pretrained_cfg = PretrainedCfg(**pretrained_cfg)
         elif isinstance(pretrained_cfg, str):
             pretrained_tag = pretrained_cfg
             pretrained_cfg = None
 
-    # fallback to looking up pretrained cfg in model registry by variant identifier
     if not pretrained_cfg:
         if pretrained_tag:
             model_with_tag = ".".join([variant, pretrained_tag])
@@ -74,7 +161,7 @@ def resolve_pretrained_cfg(
             f"No pretrained configuration specified for {model_with_tag} model. Using a default."
             f" Please add a config to the model pretrained_cfg registry or pass explicitly."
         )
-        pretrained_cfg = PretrainedCfg()  # instance with defaults
+        pretrained_cfg = PretrainedCfg()
 
     pretrained_cfg_overlay = pretrained_cfg_overlay or {}
     if not pretrained_cfg.architecture:
@@ -85,9 +172,8 @@ def resolve_pretrained_cfg(
 
 
 def pretrained_cfg_for_features(pretrained_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Adapt a pretrained cfg for feature extraction (remove classifier info)."""
+    """Adapt a pretrained cfg for feature extraction."""
     pretrained_cfg = dict(pretrained_cfg)
-    # remove default pretrained cfg fields that don't have much relevance for feature backbone
     to_remove = ("num_classes", "classifier", "global_pool")
     for tr in to_remove:
         pretrained_cfg.pop(tr, None)
@@ -99,10 +185,6 @@ def load_custom_pretrained(
     pretrained_cfg: Optional[Dict[str, Any]] = None,
     cache_dir: Optional[Union[str, Path]] = None,
 ) -> None:
-    """Load pretrained weights for models with custom load functions.
-
-    The model must implement a `load_pretrained` method.
-    """
     pretrained_cfg = pretrained_cfg or getattr(model, "pretrained_cfg", None)
     if not pretrained_cfg:
         _logger.warning("No pretrained config found for custom load.")
@@ -122,7 +204,7 @@ def load_custom_pretrained(
             )
         )
     elif source == "local-dir":
-        pass  # location is already the path
+        pass
     else:
         _logger.warning("Custom load does not support source '%s'.", source)
         return
@@ -141,16 +223,8 @@ def _filter_kwargs(kwargs: Dict[str, Any], names: List[str]) -> None:
 
 
 def _update_default_model_kwargs(pretrained_cfg, kwargs, kwargs_filter) -> None:
-    """Update the default_cfg and kwargs before passing to model
-
-    Args:
-        pretrained_cfg: input pretrained cfg (updated in-place)
-        kwargs: keyword args passed to model build fn (updated in-place)
-        kwargs_filter: keyword arg keys that must be removed before model __init__
-    """
     default_kwarg_names = ("num_classes", "global_pool", "in_chans")
     if pretrained_cfg.get("fixed_input_size", False):
-        # if fixed_input_size exists and is True, model takes an img_size arg that fixes its input size
         default_kwarg_names += ("img_size",)
 
     for n in default_kwarg_names:
@@ -166,7 +240,6 @@ def _update_default_model_kwargs(pretrained_cfg, kwargs, kwargs_filter) -> None:
                 kwargs.setdefault(n, input_size[-1])
         elif n == "num_classes":
             default_val = pretrained_cfg.get(n, None)
-            # if default is < 0, don't pass through to model
             if default_val is not None and default_val >= 0:
                 kwargs.setdefault(n, pretrained_cfg[n])
         else:
@@ -174,51 +247,55 @@ def _update_default_model_kwargs(pretrained_cfg, kwargs, kwargs_filter) -> None:
             if default_val is not None:
                 kwargs.setdefault(n, pretrained_cfg[n])
 
-    # Filter keyword args for task specific model variants (some 'features only' models, etc.)
     _filter_kwargs(kwargs, names=kwargs_filter)
 
 
 def _resolve_pretrained_source(cfg: dict) -> Tuple[Optional[str], Any]:
+    """Determine where to load weights from.
+
+    Checks in priority order:
+        1. state_dict    - an in-memory dict already containing the weights
+        2. local_dir     - a local filesystem path (set by _merge_checkpoint_cfg)
+        3. file / folder - legacy local path keys
+        4. hf_hub_id     - Hugging Face Hub
+    """
+    # In-memory state dict (highest priority)
     if cfg.get("state_dict") is not None:
         return "state_dict", cfg["state_dict"]
-    for key in ("file", "local_dir", "folder"):
+
+    # Check it first before falling through to the HF hub id.
+    local_dir = cfg.get("local_dir")
+    if local_dir:
+        p = Path(local_dir)
+        if p.exists():
+            return "local-dir", str(p)
+        _logger.warning("local_dir '%s' does not exist — falling back.", local_dir)
+
+    # Legacy local-path keys
+    for key in ("file", "folder"):
         loc = cfg.get(key)
         if loc and Path(loc).is_dir():
             return "local-dir", str(loc)
+
+    # Remote: Hugging Face Hub
     hf_id = cfg.get("hf_hub_id")
     if hf_id:
         return "hf-hub", hf_id
+
     return None, None
 
 
 def _get_checkpointer():
-    """Return a checkpointer that can restore without a target tree.
-
-    #TODO: Check ocp.Checkpointer option 'partially=True'
-
-    PyTreeCheckpointer is preferred because it does not require a
-    target structure for .restore(), making partial loading safe.
-    """
-    # PyTreeCheckpointer: restores without target (no warning)
     if hasattr(ocp, "PyTreeCheckpointer"):
         return ocp.PyTreeCheckpointer()
-    # Newer orbax: Checkpointer + PyTreeCheckpointHandler
     if hasattr(ocp, "Checkpointer") and hasattr(ocp, "PyTreeCheckpointHandler"):
         return ocp.Checkpointer(ocp.PyTreeCheckpointHandler())
-    # Last resort (will warn about missing target)
     return ocp.StandardCheckpointer()
 
 
 def _strip_variable_state(obj):
-    """nnx.State -> nested dict of **numpy** arrays.
-
-    This is the critical step: we strip VariableState wrappers so that
-    Orbax saves a plain {key: array} tree. Without this, Orbax serialises
-    VariableState internals (.value, .type, .raw_value) as sub-keys,
-    and restoring without a matching target produces a mismatched tree.
-    """
     if isinstance(obj, nnx.Variable):
-        return jnp.array(obj.get_value())  # ← just the array
+        return jnp.array(obj.get_value())
     if isinstance(obj, (dict, nnx.State)):
         return {str(k): _strip_variable_state(v) for k, v in obj.items()}
     if hasattr(obj, "shape"):
@@ -227,7 +304,6 @@ def _strip_variable_state(obj):
 
 
 def _flatten(d: dict, prefix: str = "", sep: str = ".") -> Dict[str, Any]:
-    """{'a': {'b': val}} into {'a.b': val}"""
     out: Dict[str, Any] = {}
     for k, v in d.items():
         key = f"{prefix}{sep}{k}" if prefix else str(k)
@@ -241,11 +317,6 @@ def _flatten(d: dict, prefix: str = "", sep: str = ".") -> Dict[str, Any]:
 def _normalize_flat_dict(flat: Dict[str, Any]) -> Dict[str, Any]:
     """Backward-compat: fix legacy checkpoints that saved VariableState.
     #TODO: remove since new version will be use 'Variable'
-    Legacy checkpoints have keys like:
-        bn1.bias.value - the actual array
-        bn1.bias.type - VariableState metadata (discard)
-
-    We collapse 'x.value' - 'x' and drop '.type' / '.raw_value'.
     """
     has_value_suffix = any(k.endswith(".value") for k in flat)
     if not has_value_suffix:
@@ -255,16 +326,15 @@ def _normalize_flat_dict(flat: Dict[str, Any]) -> Dict[str, Any]:
     cleaned: Dict[str, Any] = {}
     for k, v in flat.items():
         if k.endswith(".type") or k.endswith(".raw_value"):
-            continue  # metadata - skip
+            continue
         if k.endswith(".value"):
-            cleaned[k[: -len(".value")]] = v  # strip suffix
+            cleaned[k[: -len(".value")]] = v
         else:
             cleaned[k] = v
     return cleaned
 
 
 def _iter_state_leaves(state, prefix: str = ""):
-    """Yield (dotted_key, VariableState) for every leaf in an NNX State."""
     for k, v in state.items():
         key = f"{prefix}.{k}" if prefix else str(k)
         if isinstance(v, nnx.Variable):
@@ -279,24 +349,15 @@ def save_orbax_checkpoint(
     config: Optional[Dict[str, Any]] = None,
     state_subfolder: str = "state",
 ) -> None:
-    """Save an NNX model as an Orbax checkpoint of **pure arrays**.
-    #TODO: review pure vs ocp.checkpointer/manager
-    Directory layout::
-
-        checkpoint_dir/
-            config.json
-            state/        orbax pytree (one file per leaf)
-    """
+    """Save an NNX model as an Orbax checkpoint of pure arrays."""
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # config.json
     cfg = config or getattr(model, "pretrained_cfg", None) or {}
     if cfg:
         with open(checkpoint_dir / "config.json", "w") as f:
             json.dump(cfg, f, indent=2)
 
-    # state (pure arrays)
     state = nnx.state(model)
     pure_tree = _strip_variable_state(state)
 
@@ -309,21 +370,15 @@ def load_orbax_state_dict(
     checkpoint_dir: Union[str, Path],
     state_subfolder: str = "state",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Load an Orbax checkpoint ``(flat_state_dict, config)``.
-
-    Handles both new (pure-array) and legacy (VariableState) formats.
-    #TODO: remove legacy
-    """
+    """Load an Orbax checkpoint → (flat_state_dict, config)."""
     checkpoint_dir = Path(checkpoint_dir)
 
-    # Config
     config: Dict[str, Any] = {}
     cfg_path = checkpoint_dir / "config.json"
     if cfg_path.exists():
         with open(cfg_path) as f:
             config = json.load(f)
 
-    # State
     state_path = checkpoint_dir / state_subfolder
     restore_path = state_path if state_path.exists() else checkpoint_dir
 
@@ -339,7 +394,7 @@ def load_orbax_state_dict(
 def adapt_input_conv(
     in_chans: int,
     weight: jnp.ndarray,
-    channel_axis: int = 2,  # Flax shape[Height Width Input Output]
+    channel_axis: int = 2,
 ) -> jnp.ndarray:
     orig = weight.shape[channel_axis]
     if in_chans == orig:
@@ -364,7 +419,6 @@ def _apply_flat_state_dict(
     flat_dict: Dict[str, Any],
     strict: bool = True,
 ) -> LoadResult:
-    """Merge a flat ``{dotted_key: array}`` dict into an NNX model."""
     state = nnx.state(model)
     leaves = dict(_iter_state_leaves(state))
 
@@ -411,7 +465,6 @@ def debug_key_mismatch(
     model: nnx.Module,
     checkpoint_dir: Union[str, Path],
 ) -> None:
-    """Print model keys vs checkpoint keys for debugging."""
     state = nnx.state(model)
     model_keys = {k for k, _ in _iter_state_leaves(state)}
     ckpt_keys_flat, _ = load_orbax_state_dict(checkpoint_dir)
@@ -436,13 +489,7 @@ def load_pretrained(
     strict: bool = True,
     cache_dir: Optional[Union[str, Path]] = None,
 ) -> None:
-    """Load pretrained weights into a Flax NNX model.
-
-    Config keys (pretrained_cfg):
-        state_dict  -> ready-made {dotted_key: array} dict
-        local_dir   -> path to Orbax checkpoint folder
-        hf_hub_id   -> Hugging Face Hub repo id
-    """
+    """Load pretrained weights into a Flax NNX model."""
     pretrained_cfg = pretrained_cfg or getattr(model, "pretrained_cfg", None)
     if not pretrained_cfg:
         raise RuntimeError(
@@ -555,47 +602,44 @@ def build_model_with_cfg(
     kwargs_filter: Optional[Tuple[str]] = None,
     **kwargs,
 ) -> ModelT:
-    """Build model with specified default_cfg and optional model_cfg
+    """Build model with specified default_cfg and optional model_cfg.
 
-    This helper fn aids in the construction of a model including:
-      * handling default_cfg and associated pretrained weight loading
-      * passing through optional model_cfg for models with config based arch spec
-      * features_only model adaptation
-      * pruning config / model adaptation
+    FIX: checkpoint_path is now a first-class parameter.
 
-    Args:
-        model_cls: Model class
-        variant: Model variant name
-        pretrained: Load the pretrained weights
-        pretrained_cfg: Model's pretrained weight/task config
-        pretrained_cfg_overlay: Entries that will override those in pretrained_cfg
-        model_cfg: Model's architecture config
-        feature_cfg: Feature extraction adapter config
-        pretrained_strict: Load pretrained weights strictly
-        pretrained_filter_fn: Filter callable for pretrained weights
-        cache_dir: Override model cache dir for Hugging Face Hub and Torch checkpoints
-        kwargs_filter: Kwargs keys to filter (remove) before passing to model
-        **kwargs: Model args passed through to model __init__
+    When ``checkpoint_path`` is supplied:
+      1. ``config.json`` from that directory is read and merged into the
+         resolved ``pretrained_cfg`` — so ``model.pretrained_cfg`` reflects
+         the correct mean/std/input_size for *this specific checkpoint*
+         rather than the library default.
+      2. The ``local_dir`` key is injected into ``pretrained_cfg`` so that
+         ``_resolve_pretrained_source`` / ``load_pretrained`` will load from
+         the local path rather than trying to download from the Hub.
+      3. ``pretrained`` is implicitly treated as True when
+         ``checkpoint_path`` is provided.
     """
     pruned = kwargs.pop("pruned", False)
+
+    checkpoint_path: Optional[Union[str, Path]] = kwargs.pop("checkpoint_path", None)
     features = False
     feature_cfg = feature_cfg or {}
 
-    # resolve and update model pretrained config and model kwargs
-    pretrained_cfg = resolve_pretrained_cfg(
+    resolved_cfg = resolve_pretrained_cfg(
         variant,
         pretrained_cfg=pretrained_cfg,
         pretrained_cfg_overlay=pretrained_cfg_overlay,
     )
-    pretrained_cfg = pretrained_cfg.to_dict()
 
-    seed = pretrained_cfg.get("rngs", 0)
+    if checkpoint_path is not None:
+        resolved_cfg = _merge_checkpoint_cfg(resolved_cfg, checkpoint_path)
+
+    pretrained_cfg_dict = resolved_cfg.to_dict()
+
+    seed = pretrained_cfg_dict.get("rngs", 0)
     rngs = dict(rngs=nnx.Rngs(seed))
     kwargs.update(rngs)
 
-    _update_default_model_kwargs(pretrained_cfg, kwargs, kwargs_filter)
+    _update_default_model_kwargs(pretrained_cfg_dict, kwargs, kwargs_filter)
 
-    # Setup for feature extraction wrapper done at end of this fn
     if kwargs.pop("features_only", False):
         features = True
         feature_cfg.setdefault("out_indices", (0, 1, 2, 3, 4))
@@ -604,27 +648,28 @@ def build_model_with_cfg(
         if "feature_cls" in kwargs:
             feature_cfg["feature_cls"] = kwargs.pop("feature_cls")
 
-    # Instantiate the model
+    # Instantiate model
     if model_cfg is None:
         model = model_cls(**kwargs)
     else:
         model = model_cls(cfg=model_cfg, **kwargs)
-    model.pretrained_cfg = pretrained_cfg
-    model.default_cfg = model.pretrained_cfg  # alias for backwards compat
+
+    model.pretrained_cfg = pretrained_cfg_dict
+    model.default_cfg = model.pretrained_cfg
 
     if pruned:
         _logger.warning("Pruned model loading is not yet implemented for Flax/JAX")
 
-    # For classification models, check class attr, then kwargs, then default to 1k, otherwise 0 for feats
     num_classes_pretrained = (
         0
         if features
         else getattr(model, "num_classes", kwargs.get("num_classes", 1000))
     )
-    if pretrained:
+
+    if pretrained or checkpoint_path is not None:
         load_pretrained(
             model,
-            pretrained_cfg=pretrained_cfg,
+            pretrained_cfg=pretrained_cfg_dict,
             num_classes=num_classes_pretrained,
             in_chans=kwargs.get("in_chans", 3),
             filter_fn=pretrained_filter_fn,
@@ -632,7 +677,6 @@ def build_model_with_cfg(
             cache_dir=cache_dir,
         )
 
-    # Wrap the model in a feature extraction module if enabled
     if features:
         feature_cls = FeatureGetterNet
         if "feature_cls" in feature_cfg:
@@ -645,7 +689,7 @@ def build_model_with_cfg(
                     assert False, f"Unknown feature class {feature_cls_name}"
 
         model = feature_cls(model, **feature_cfg)
-        model.pretrained_cfg = pretrained_cfg_for_features(pretrained_cfg)
+        model.pretrained_cfg = pretrained_cfg_for_features(pretrained_cfg_dict)
         model.default_cfg = model.pretrained_cfg
 
     return model

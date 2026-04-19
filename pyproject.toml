@@ -10,7 +10,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Shaymukhametov Rinat", email = "shaymukhametov.rinat.ml@gmail.com" }]
 requires-python = ">=3.12"
-keywords = ["jax", "flax", "deep-learning", "computer-vision", "resnet", "timm"]
+keywords = ["jax", "flax", "deep-learning", "computer-vision", "resnet"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -23,19 +23,52 @@ classifiers = [
 ]
 
 dependencies = [
-    "jax==0.9.0",
-    "flax==0.12.3",
-    "orbax-checkpoint==0.11.32",
+    "jax>=0.9.0",
+    "flax>=0.12.3",
+    "orbax-checkpoint>=0.11.32",
     "Pillow>=12.1.1",
-    "numpy>=2.3.5",
+    "numpy>=1.26.0",
     "huggingface-hub>=1.4.1",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
 ]
 
 [project.optional-dependencies]
+
+# CUDA 12.8 (Ampere / Ada / Hopper GPUs).
+# Install with:
+#   pip install "jaxnn[cu128]" \
+#       --extra-index-url https://download.pytorch.org/whl/cu128
+cu128 = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+]
+
+# CUDA 12.6
+# Install with:
+#   pip install "jaxnn[cu126]" \
+#       --extra-index-url https://download.pytorch.org/whl/cu126
+cu126 = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+]
+
+# Weight conversion from timm checkpoints (always CPU is fine).
+# Install with:
+#   pip install "jaxnn[convert]" \
+#       --extra-index-url https://download.pytorch.org/whl/cpu
+convert = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "timm>=1.0.25",
+]
+
+# Full dev environment (tests, linting, conversion tools).
 dev = [
-    "pytest>=9.0.2",
-    "torch>=2.10.0",        # for weight conversion only
-    "timm>=1.0.25",         # for weight conversion only
+    "pytest>=8.0.0",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "timm>=1.0.25",
 ]
 
 [project.urls]

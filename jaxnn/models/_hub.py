@@ -30,17 +30,15 @@ __all__ = [
     "has_hf_hub",
     "hf_split",
     "load_model_config_from_hf",
+    "load_model_config_from_path",
     "load_state_path_from_hf",
     "save_for_hf",
     "push_to_hf_hub",
 ]
 
-# Default name for a weights file hosted on the Huggingface Hub.
-HF_WEIGHTS_NAME = (
-    "model.msgpack"  # default jax msgpack which is already contains 'safetensors'
-)
-HF_SAFE_WEIGHTS_NAME = "model.safetensors"  # safetensors version
-HF_CONFIG_NAME = "config.json"  # config file
+HF_WEIGHTS_NAME = "model.msgpack"
+HF_SAFE_WEIGHTS_NAME = "model.safetensors"
+HF_CONFIG_NAME = "config.json"
 
 
 def get_cache_dir(child_dir: str = ""):
@@ -54,7 +52,6 @@ def get_cache_dir(child_dir: str = ""):
 
 def has_hf_hub(necessary: bool = False):
     if not _has_hf_hub and necessary:
-        # if no HF Hub module installed, and it is necessary to continue, raise error
         raise RuntimeError(
             "Hugging Face hub model specified but package not installed."
             "Run `pip install huggingface_hub`."
@@ -95,10 +92,15 @@ def load_cfg_from_json(json_file: Union[str, Path]):
 def _parse_model_cfg(
     cfg: Dict[str, Any], extra_fields: Dict[str, Any]
 ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
+    """Parse a config.json dict into (pretrained_cfg, architecture_name, model_args).
+
+    Returns a 3-tuple so callers can pass model_args to build_model_with_cfg.
+    Both load_model_config_from_hf and load_model_config_from_path use this,
+    so _factory.py must always unpack all three values.
+    """
     pretrained_cfg = cfg["pretrained_cfg"]
     pretrained_cfg.update(extra_fields)
 
-    # top‑level overrides
     if "num_classes" in cfg:
         pretrained_cfg["num_classes"] = cfg["num_classes"]
     if "label_names" in cfg:
@@ -115,21 +117,44 @@ def load_model_config_from_hf(
     model_id: str,
     cache_dir: Optional[Union[str, Path]] = None,
 ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
-    """Original HF‑Hub loader (unchanged download, shared parsing)."""
+    """Load config.json from a HF Hub repo.
+
+    Returns:
+        (pretrained_cfg, architecture_name, model_args)
+    """
     assert has_hf_hub(True)
     cfg_path = download_from_hf(model_id, HF_CONFIG_NAME, cache_dir=cache_dir)
     cfg = load_cfg_from_json(cfg_path)
     return _parse_model_cfg(cfg, {"hf_hub_id": model_id, "source": "hf-hub"})
 
 
-def load_model_config_from_path(model_path: Union[str, Path]):
-    """Load from ``<model_path>/config.json`` on the local filesystem."""
+def load_model_config_from_path(
+    model_path: Union[str, Path],
+) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
+    """Load config.json from a local JaxNN checkpoint directory.
+
+    The directory is expected to contain:
+        config.json   — preprocessing metadata + architecture name
+        state/        — Orbax checkpoint produced by the converter
+
+    Returns:
+        (pretrained_cfg, architecture_name, model_args)
+
+    The returned pretrained_cfg contains ``local_dir`` pointing to the
+    directory so that ``_resolve_pretrained_source`` in ``_builder.py``
+    can locate the Orbax state when loading weights.  This mirrors how
+    ``load_model_config_from_hf`` sets ``hf_hub_id`` on the returned cfg.
+    """
     model_path = Path(model_path)
     cfg_file = model_path / HF_CONFIG_NAME
     if not cfg_file.is_file():
-        raise FileNotFoundError(f"Config file is not found: {cfg_file}")
+        raise FileNotFoundError(
+            f"config.json not found at {cfg_file}. "
+            "Make sure the path points to a directory produced by the JaxNN "
+            "converter (it should contain config.json and state/)."
+        )
     cfg = load_cfg_from_json(cfg_file)
-    extra_fields = {"file": str(model_path), "source": "local-dir"}
+    extra_fields = {"local_dir": str(model_path), "source": "local-dir"}
     return _parse_model_cfg(cfg, extra_fields=extra_fields)
 
 
@@ -149,10 +174,8 @@ def load_state_path_from_hf(
     assert has_hf_hub(True)
     hf_model_id, hf_revision = hf_split(model_id)
 
-    # Explicit revision arg takes priority over one parsed from model_id
     effective_revision = revision or hf_revision
 
-    # snapshot_download returns the local cache path - MUST capture it
     local_dir = snapshot_download(
         hf_model_id,
         repo_type="model",
@@ -178,7 +201,6 @@ def save_config_for_hf(
     pretrained_cfg = filter_pretrained_cfg(
         pretrained_cfg, remove_source=True, remove_null=True
     )
-    # set some values at root config level
     hf_config["architecture"] = pretrained_cfg.pop("architecture")
     hf_config["num_classes"] = model_config.pop(
         "num_classes", getattr(model, "num_classes", None)
@@ -186,7 +208,6 @@ def save_config_for_hf(
     if hf_config["num_classes"] is None:
         raise ValueError("num_classes must be defined in model or model_config.")
 
-    # NOTE these attr saved for informational purposes, do not impact model build
     hf_config["num_features"] = model_config.pop(
         "num_features", getattr(model, "num_features", None)
     )
@@ -196,18 +217,14 @@ def save_config_for_hf(
     if isinstance(global_pool_type, str) and global_pool_type:
         hf_config["global_pool"] = global_pool_type
 
-    # Save class label info
     label_names = model_config.pop("label_names", None)
     if label_names:
         assert isinstance(label_names, (dict, list, tuple))
-        # map label id (classifier index) -> unique label name (ie synset for ImageNet, MID for OpenImages)
-        # can be a dict id: name if there are id gaps, or tuple/list if no gaps.
         hf_config["label_names"] = label_names
 
     label_descriptions = model_config.pop("label_descriptions", None)
     if label_descriptions:
         assert isinstance(label_descriptions, dict)
-        # maps label names -> descriptions
         hf_config["label_descriptions"] = label_descriptions
 
     if model_args:
@@ -228,17 +245,14 @@ def save_for_hf(
 ):
     save_directory = Path(save_directory)
 
-    # 1. Extract state
     graphdef, state = nnx.split(model)
 
-    # 2. Save weights (pure arrays, consistent with load path)
     from jaxnn.models._builder import _get_checkpointer, _strip_variable_state
 
     pure_tree = _strip_variable_state(state)
     ckptr = _get_checkpointer()
     ckptr.save(str(save_directory / "state"), pure_tree)
 
-    # 3. Save config
     config_path = save_directory / HF_CONFIG_NAME
     save_config_for_hf(model, config_path, model_config, model_args)
 
@@ -256,29 +270,16 @@ def push_to_hf_hub(
     model_args: Optional[dict] = None,
     task_name: str = "image-classification",
 ):
-    """
-    Arguments:
-        (...)
-        safe_serialization (`bool` or `"both"`, *optional*, defaults to `False`):
-            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-            Can be set to `"both"` in order to push both safe and unsafe weights.
-    """
     api = HfApi(token=token, library_name="jaxnn", library_version=__version__)
 
-    # Create repo if it doesn't exist yet
     repo_url = api.create_repo(repo_id, private=private, exist_ok=True)
-
-    # Can be different from the input `repo_id` if repo_owner was implicit
     repo_id = repo_url.repo_id
 
-    # Check if README file already exist in repo
     has_readme = api.file_exists(
         repo_id=repo_id, filename="README.md", revision=revision
     )
 
-    # Dump model and push to Hub
     with TemporaryDirectory() as tmpdir:
-        # Save model weights and config.
         save_for_hf(
             model,
             tmpdir,
@@ -286,7 +287,6 @@ def push_to_hf_hub(
             model_args=model_args,
         )
 
-        # Add readme if it does not exist
         if not has_readme:
             model_card = model_card or {}
             model_name = repo_id.split("/")[-1]
@@ -294,7 +294,6 @@ def push_to_hf_hub(
             readme_text = generate_readme(model_card, model_name, task_name=task_name)
             readme_path.write_text(readme_text)
 
-        # Upload model and return
         return api.upload_folder(
             repo_id=repo_id,
             folder_path=tmpdir,
@@ -358,12 +357,10 @@ def generate_readme(
         readme_text += "\n## Model Usage\n"
         readme_text += model_card["usage"]
         readme_text += "\n"
-
     if "comparison" in model_card:
         readme_text += "\n## Model Comparison\n"
         readme_text += model_card["comparison"]
         readme_text += "\n"
-
     if "citation" in model_card:
         readme_text += "\n## Citation\n"
         if not isinstance(model_card["citation"], (list, tuple)):

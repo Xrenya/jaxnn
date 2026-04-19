@@ -5,6 +5,7 @@ Copyright of original work: 2019 Ross Wightman
 
 Hacked together by / Copyright 2026 Rinat Shaymukhametov
 """
+
 import jax
 from flax import nnx
 import jax.numpy as jnp
@@ -12,7 +13,7 @@ from functools import partial
 
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 
-from ..layers import to_ntuple, Activation, MaxPool2D, AvgPool2D
+from ..layers import to_ntuple, Activation, MaxPool2D, AvgPool2D, Identity
 
 from jaxnn.models._registry import register_model, generate_default_cfgs
 from jaxnn.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -38,18 +39,18 @@ _NORM_LAYER_MAP: Dict[str, Type[nnx.Module]] = {
     "layer_norm": nnx.LayerNorm,
     "ln": nnx.LayerNorm,
 }
- 
- 
+
+
 def get_norm_layer(norm_layer: LayerType) -> Type[nnx.Module]:
     """Resolve a norm layer string alias or pass a callable through unchanged.
- 
+
     Args:
         norm_layer: A string alias (e.g. ``"groupnorm"``, ``"bn"``) or an
             already-callable class such as ``nnx.BatchNorm``.
- 
+
     Returns:
         A callable class with the signature ``cls(num_features, *, rngs)``.
- 
+
     Raises:
         ValueError: If a string alias is not recognised.
         TypeError: If the argument is neither a string nor a callable.
@@ -65,11 +66,10 @@ def get_norm_layer(norm_layer: LayerType) -> Type[nnx.Module]:
     if callable(norm_layer):
         return norm_layer
     raise TypeError(
-        f"norm_layer must be a string alias or a callable class, "
-        f"got {type(norm_layer)}"
+        f"norm_layer must be a string alias or a callable class, got {type(norm_layer)}"
     )
- 
- 
+
+
 class Downsample(nnx.Module):
     def __init__(
         self,
@@ -85,9 +85,13 @@ class Downsample(nnx.Module):
         *,
         rngs: nnx.Rngs,
     ) -> None:
-        kernel_size = (1, 1) if strides == (1, 1) and dilation == (1, 1) else kernel_size
-        first_dilation = (first_dilation or dilation) if kernel_size != (1, 1) else (1, 1)
- 
+        kernel_size = (
+            (1, 1) if strides == (1, 1) and dilation == (1, 1) else kernel_size
+        )
+        first_dilation = (
+            (first_dilation or dilation) if kernel_size != (1, 1) else (1, 1)
+        )
+
         self.conv = nnx.Conv(
             in_features=in_channels,
             out_features=out_channels,
@@ -100,13 +104,13 @@ class Downsample(nnx.Module):
         )
         norm_layer = norm_layer or nnx.BatchNorm
         self.bn = norm_layer(num_features=out_channels, rngs=rngs)
- 
+
     def __call__(self, x: jax.Array) -> jax.Array:
         x = self.conv(x)
         x = self.bn(x)
         return x
- 
- 
+
+
 class AntiAliasingLayer(nnx.Module):
     def __init__(
         self,
@@ -119,7 +123,7 @@ class AntiAliasingLayer(nnx.Module):
     ) -> None:
         if isinstance(strides, int):
             strides = (strides, strides)
- 
+
         self.pooling = True
         if not aa_layer or not enable:
             self.pooling = False
@@ -130,12 +134,12 @@ class AntiAliasingLayer(nnx.Module):
                 aa_layer = nnx.avg_pool
             else:
                 raise ValueError(f"Unknown anti-aliasing layer ({aa_layer}).")
- 
+
         self.pool = aa_layer
         self.window_shape = window_shape
         self.strides = strides
         self.padding = padding
- 
+
     def __call__(self, x: jax.Array) -> jax.Array:
         if self.pooling:
             return self.pool(
@@ -145,47 +149,50 @@ class AntiAliasingLayer(nnx.Module):
                 padding=self.padding,
             )
         return self.pool(x)
- 
- 
+
+
 class AdaptiveAvgPool2D(nnx.Module):
     def __init__(self, output_size: Union[int, Tuple[int, int]]) -> None:
         if isinstance(output_size, int):
             output_size = (output_size, output_size)
         self.output_size: Tuple[int, int] = output_size
- 
+
     def __call__(self, x: jax.Array) -> jax.Array:
         _, input_height, input_width, _ = x.shape
- 
+
         h_stride = input_height // self.output_size[0]
         w_stride = input_width // self.output_size[1]
- 
+
         h_kernel = input_height - (self.output_size[0] - 1) * h_stride
         w_kernel = input_width - (self.output_size[1] - 1) * w_stride
- 
+
         return nnx.avg_pool(
             x,
             window_shape=(h_kernel, w_kernel),
             strides=(h_stride, w_stride),
         )
- 
- 
+
+
 class Classifier(nnx.Module):
     def __init__(
         self, num_pooled_features: int, num_classes: int, *, rngs: nnx.Rngs
     ) -> None:
         self.in_features = num_pooled_features
         self.out_features = num_classes
-        self.fc = nnx.Linear(
-            in_features=num_pooled_features, out_features=num_classes, rngs=rngs
-        )
- 
+        if num_classes <= 0:
+            self.fc = Identity()
+        else:
+            self.fc = nnx.Linear(
+                in_features=num_pooled_features, out_features=num_classes, rngs=rngs
+            )
+
     def __call__(self, x: jax.Array) -> jax.Array:
         return self.fc(x)
- 
- 
+
+
 class BasicBlock(nnx.Module):
     expansion: int = 1
- 
+
     def __init__(
         self,
         inplanes: int,
@@ -208,14 +215,14 @@ class BasicBlock(nnx.Module):
     ) -> None:
         assert cardinality == 1, "BasicBlock only supports cardinality of 1"
         assert base_width == 64, "BasicBlock does not support changing base width"
- 
+
         first_planes = planes // reduce_first
         out_planes = planes * self.expansion
         first_dilation = first_dilation or dilation
         use_aa = aa_layer is not None and (
             strides[0] == 2 or first_dilation[0] != dilation[0]
         )
- 
+
         self.conv1 = nnx.Conv(
             in_features=inplanes,
             out_features=first_planes,
@@ -232,7 +239,7 @@ class BasicBlock(nnx.Module):
         )
         self.act1 = Activation(act_layer)
         self.aa = AntiAliasingLayer(aa_layer, strides=strides, enable=use_aa)
- 
+
         self.conv2 = nnx.Conv(
             in_features=first_planes,
             out_features=out_planes,
@@ -244,44 +251,44 @@ class BasicBlock(nnx.Module):
             rngs=rngs,
         )
         self.bn2 = norm_layer(num_features=out_planes, rngs=rngs)
- 
+
         self.se = attn_layer(out_planes, rngs=rngs) if attn_layer is not None else None
         self.act2 = Activation(act_layer)
         self.downsample = downsample
         self.strides = strides
         self.dilation = dilation
         self.drop_path = drop_path
- 
+
     def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         shortcut = x
- 
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.drop_block(x)
         x = self.act1(x)
         x = self.aa(x)
- 
+
         x = self.conv2(x)
         x = self.bn2(x)
- 
+
         if self.se is not None:
             x = self.se(x)
- 
+
         if self.drop_path is not None:
             x = self.drop_path(x, training=training)
- 
+
         if self.downsample is not None:
             shortcut = self.downsample(shortcut)
- 
+
         x = x + shortcut
         x = self.act2(x)
- 
+
         return x
- 
- 
+
+
 class Bottleneck(nnx.Module):
     expansion: int = 4
- 
+
     def __init__(
         self,
         inplanes: int,
@@ -309,7 +316,7 @@ class Bottleneck(nnx.Module):
         use_aa = aa_layer is not None and (
             strides[0] == 2 or first_dilation[0] != dilation[0]
         )
- 
+
         self.conv1 = nnx.Conv(
             in_features=inplanes,
             out_features=first_planes,
@@ -319,7 +326,7 @@ class Bottleneck(nnx.Module):
         )
         self.bn1 = norm_layer(num_features=first_planes, rngs=rngs)
         self.act1 = Activation(act_layer)
- 
+
         self.conv2 = nnx.Conv(
             in_features=first_planes,
             out_features=width,
@@ -337,7 +344,7 @@ class Bottleneck(nnx.Module):
         )
         self.act2 = Activation(act_layer)
         self.aa = AntiAliasingLayer(aa_layer, strides=strides, enable=use_aa)
- 
+
         self.conv3 = nnx.Conv(
             in_features=width,
             out_features=out_planes,
@@ -346,45 +353,45 @@ class Bottleneck(nnx.Module):
             rngs=rngs,
         )
         self.bn3 = norm_layer(num_features=out_planes, rngs=rngs)
- 
+
         self.se = attn_layer(out_planes, rngs=rngs) if attn_layer is not None else None
         self.act3 = Activation(act_layer)
         self.downsample = downsample
         self.strides = strides
         self.dilation = dilation
         self.drop_path = drop_path
- 
+
     def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         shortcut = x
- 
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.act1(x)
- 
+
         x = self.conv2(x)
         x = self.bn2(x)
         x = self.drop_block(x)
         x = self.act2(x)
         x = self.aa(x)
- 
+
         x = self.conv3(x)
         x = self.bn3(x)
- 
+
         if self.se is not None:
             x = self.se(x)
- 
+
         if self.drop_path is not None:
             x = self.drop_path(x, training=training)
- 
+
         if self.downsample is not None:
             shortcut = self.downsample(shortcut)
- 
+
         x = x + shortcut
         x = self.act3(x)
- 
+
         return x
- 
- 
+
+
 class DropPath(nnx.Module):
     def __init__(
         self,
@@ -396,22 +403,22 @@ class DropPath(nnx.Module):
         self.drop_prob = drop_prob
         self.scale_by_keep = scale_by_keep
         self.rngs = rngs
- 
+
     def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         if self.drop_prob == 0.0 or not training:
             return x
- 
+
         keep_prob = 1 - self.drop_prob
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)
         key = self.rngs.dropout() if self.rngs is not None else jax.random.PRNGKey(0)
         random_tensor = jax.random.bernoulli(key, keep_prob, shape)
- 
+
         if keep_prob > 0.0 and self.scale_by_keep:
             random_tensor = random_tensor / keep_prob
- 
+
         return x * random_tensor
- 
- 
+
+
 def downsample_avg(
     in_channels: int,
     out_channels: int,
@@ -428,7 +435,7 @@ def downsample_avg(
     norm_layer = norm_layer or nnx.BatchNorm
     avg_stride: Tuple[int, int] = strides if dilation == (1, 1) else (1, 1)
     need_pool = avg_stride[0] > 1 or (dilation[0] > 1 and strides[0] > 1)
- 
+
     class AvgDownsample(nnx.Module):
         def __init__(self):
             if need_pool:
@@ -448,20 +455,20 @@ def downsample_avg(
                 rngs=rngs,
             )
             self.bn = norm_layer(num_features=out_channels, rngs=rngs)
- 
+
         def __call__(self, x: jax.Array) -> jax.Array:
             if self.pool is not None:
                 x = self.pool(x)
             x = self.conv(x)
             x = self.bn(x)
             return x
- 
+
     return AvgDownsample()
- 
- 
+
+
 def drop_blocks(drop_prob: float = 0.0) -> List[Optional[partial]]:
     """Generate per-stage DropBlock configs (4 stages).
- 
+
     DropBlock is only applied to stages 3 and 4 (index 2, 3) following
     the original paper.
     """
@@ -471,8 +478,8 @@ def drop_blocks(drop_prob: float = 0.0) -> List[Optional[partial]]:
         partial(DropPath, drop_prob=drop_prob) if drop_prob else None,
         partial(DropPath, drop_prob=drop_prob) if drop_prob else None,
     ]
- 
- 
+
+
 def make_blocks(
     block_fns: Tuple[Union[Type[BasicBlock], Type[Bottleneck]], ...],
     channels: Tuple[int, ...],
@@ -495,7 +502,7 @@ def make_blocks(
     # padding= / kernel_dilation= in nnx.Conv.
     dilation: Tuple[int, int] = (1, 1)
     prev_dilation: Tuple[int, int] = (1, 1)
- 
+
     for stage_idx, (block_fn, planes, num_blocks, db) in enumerate(
         zip(block_fns, channels, block_repeats, drop_blocks(drop_block_rate))
     ):
@@ -506,9 +513,9 @@ def make_blocks(
             stride = 1
         else:
             net_stride *= stride
- 
+
         stride_t: Tuple[int, int] = to_ntuple(2)(stride)
- 
+
         downsample = None
         if stride != 1 or inplanes != planes * block_fn.expansion:
             down_kwargs = dict(
@@ -524,7 +531,7 @@ def make_blocks(
             downsample = (
                 downsample_avg(**down_kwargs) if avg_down else Downsample(**down_kwargs)
             )
- 
+
         block_kwargs = dict(
             reduce_first=reduce_first, dilation=dilation, drop_block=db, **kwargs
         )
@@ -551,15 +558,15 @@ def make_blocks(
             prev_dilation = dilation
             inplanes = planes * block_fn.expansion
             net_block_idx += 1
- 
+
         stages.append((stage_name, nnx.Sequential(*blocks)))
         feature_info.append(
             dict(num_chs=inplanes, reduction=net_stride, module=stage_name)
         )
- 
+
     return stages, feature_info
- 
- 
+
+
 def _build_stem(
     in_chans: int,
     inplanes: int,
@@ -570,7 +577,7 @@ def _build_stem(
     rngs: nnx.Rngs,
 ) -> nnx.Module:
     """Build the stem conv block for all ResNet variants.
- 
+
     stem_type        widths (first, middle, final)    avg_down
 
     "" / "b"        : normal 7x7 conv, out=64
@@ -585,15 +592,15 @@ def _build_stem(
                       tn stem_width=32  (24, 32, 64),  avg_down=True
     """
     deep_stem = "deep" in stem_type
- 
+
     if deep_stem:
         if "tiered" in stem_type:
             # Isolate the optional "n" suffix after stripping known tokens.
             suffix = (
                 stem_type.replace("deep", "")
-                         .replace("tiered", "")
-                         .replace("_", "")
-                         .strip()
+                .replace("tiered", "")
+                .replace("_", "")
+                .strip()
             )
             if suffix == "n":
                 # tn: matches timm's formula (3*(sw//4), sw) -> (24, 32) for sw=32
@@ -604,9 +611,9 @@ def _build_stem(
         else:
             # c / d / e / s
             stem_chs = (stem_width, stem_width)
- 
+
         out_chs = stem_width * 2
- 
+
         return nnx.Sequential(
             nnx.Conv(
                 in_features=in_chans,
@@ -650,11 +657,11 @@ def _build_stem(
             use_bias=False,
             rngs=rngs,
         )
- 
- 
+
+
 class ResNet(nnx.Module):
     """ResNet / ResNeXt / SE-ResNeXt supporting variants b/c/d/e/s/t/tn.
- 
+
     Stem variant is selected via ``stem_type``:
       ``""`` or ``"b"``   - normal 7x7 stem (stem_width ignored)
       ``"deep"``          - variant c  (stem_width=32, widths 32-32-64)
@@ -664,7 +671,7 @@ class ResNet(nnx.Module):
       ``"deep_tiered"``   - variant t  (stem_width=32, widths 24-48-64, avg_down=True)
       ``"deep_tieredn"``  - variant tn (stem_width=32, widths 24-32-64, avg_down=True)
     """
- 
+
     def __init__(
         self,
         block: Union[Type[BasicBlock], Type[Bottleneck]],
@@ -699,12 +706,12 @@ class ResNet(nnx.Module):
         self.drop_rate = drop_rate
         self.global_pool_type = global_pool
         self.grad_checkpointing = False
- 
+
         norm_layer = get_norm_layer(norm_layer)
- 
+
         deep_stem = "deep" in stem_type
         inplanes = stem_width * 2 if deep_stem else 64
- 
+
         self.conv1 = _build_stem(
             in_chans=in_chans,
             inplanes=inplanes,
@@ -717,7 +724,7 @@ class ResNet(nnx.Module):
         self.bn1 = norm_layer(num_features=inplanes, rngs=rngs)
         self.act1 = Activation(act_layer)
         self.feature_info = [dict(num_chs=inplanes, reduction=2, module="act1")]
- 
+
         # Stem pooling
         if replace_stem_pool:
             self.maxpool = nnx.Sequential(
@@ -749,7 +756,7 @@ class ResNet(nnx.Module):
                     strides=(2, 2),
                     padding=((1, 1), (1, 1)),
                 )
- 
+
         block_fns = to_ntuple(len(channels))(block)
         stage_modules, stage_feature_info = make_blocks(
             block_fns,
@@ -780,7 +787,7 @@ class ResNet(nnx.Module):
             nnx.Dropout(rate=drop_rate, rngs=rngs) if drop_rate > 0.0 else None
         )
         self.fc = Classifier(self.num_features, self.num_classes, rngs=rngs)
- 
+
         if zero_init_last:
             for module in self.stage_modules:
                 for block in module.layers:
@@ -788,30 +795,30 @@ class ResNet(nnx.Module):
                         block.bn3.scale.value = jnp.zeros_like(block.bn3.scale.value)
                     elif hasattr(block, "bn2"):
                         block.bn2.scale.value = jnp.zeros_like(block.bn2.scale.value)
- 
+
     def _feature_take_indices(
         self,
         indices: Optional[Union[int, Tuple[int, ...]]] = None,
     ) -> Tuple[Tuple[int, ...], int]:
         num_features = len(self.feature_info)
- 
+
         if indices is None:
             take = tuple(range(num_features))
             return take, num_features - 1
- 
+
         if isinstance(indices, int):
             assert 0 < indices <= num_features, (
                 f"last-n ({indices}) out of range (1..{num_features})"
             )
             take = tuple(range(num_features - indices, num_features))
             return take, num_features - 1
- 
+
         take = tuple(num_features + i if i < 0 else i for i in indices)
         assert all(0 <= i < num_features for i in take), (
             f"index out of range (0..{num_features - 1}): {take}"
         )
         return take, max(take)
- 
+
     def forward_intermediates(
         self,
         x: jax.Array,
@@ -823,14 +830,14 @@ class ResNet(nnx.Module):
         take_indices, max_index = self._feature_take_indices(indices)
         take_set = set(take_indices)
         intermediates: List[jax.Array] = []
- 
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.act1(x)
         if 0 in take_set:
             intermediates.append(x)
         x = self.maxpool(x)
- 
+
         for i, layer in enumerate(self.stage_modules):
             stage_idx = i + 1
             x = layer(x)
@@ -840,11 +847,11 @@ class ResNet(nnx.Module):
                 remaining = sum(1 for t in take_indices if t > stage_idx)
                 intermediates.extend([x] * remaining)
                 break
- 
+
         if intermediates_only:
             return intermediates
         return x, intermediates
- 
+
     def prune_intermediate_layers(
         self,
         indices: Union[int, Tuple[int, ...]] = 1,
@@ -857,7 +864,7 @@ class ResNet(nnx.Module):
             self.global_pool = nnx.identity
             self.fc = nnx.identity
         return take_indices
- 
+
     def forward_features(self, x: jax.Array, training: bool = False) -> jax.Array:
         x = self.conv1(x)
         x = self.bn1(x)
@@ -866,7 +873,7 @@ class ResNet(nnx.Module):
         for layer in self.stage_modules:
             x = layer(x, training=training)
         return x
- 
+
     def forward_head(
         self, x: jax.Array, pre_logits: bool = False, training: bool = False
     ) -> jax.Array:
@@ -878,7 +885,7 @@ class ResNet(nnx.Module):
             x = self.head_drop(x, deterministic=not training)
         x = self.fc(x)
         return x
- 
+
     def __call__(self, x: jax.Array, training: bool = False) -> jax.Array:
         x = self.forward_features(x, training=training)
         x = self.forward_head(x, training=training)
@@ -980,9 +987,13 @@ def _ra4cfg(url: str = "", **kwargs) -> Dict[str, Any]:
     Using standard ImageNet stats instead is the most common cause of output
     mismatch when comparing against timm for this checkpoint family.
     """
-    return _rcfg(url=url, **dict(
-        {"mean": (0.5, 0.5, 0.5), "std": (0.5, 0.5, 0.5), "crop_pct": 0.9},
-        **kwargs))
+    return _rcfg(
+        url=url,
+        **dict(
+            {"mean": (0.5, 0.5, 0.5), "std": (0.5, 0.5, 0.5), "crop_pct": 0.9}, **kwargs
+        ),
+    )
+
 
 def _gcfg(url: str = "", **kwargs) -> Dict[str, Any]:
     return _cfg(
@@ -1051,7 +1062,7 @@ default_cfgs = generate_default_cfgs(
         "resnet18d.ra4_e3600_r224_in1k": _ra4cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/ra4_e3600_r224_in1k.tv_in1k",
-            first_conv="conv1.0"
+            first_conv="conv1.0",
         ),
         "resnet18d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
@@ -1165,7 +1176,7 @@ default_cfgs = generate_default_cfgs(
             url="https://huggingface.co/JaxNN/resnet50.gluon_in1k",
         ),
         "resnet50.tv_in1k": _cfg(
-            hf_hub_id="JaxNN/", 
+            hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.tv_in1k",
         ),
         "resnet50.tv2_in1k": _cfg(
@@ -1214,7 +1225,7 @@ default_cfgs = generate_default_cfgs(
         "resnet50d.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50d.gluon_in1k",
-            first_conv="conv1.0"
+            first_conv="conv1.0",
         ),
         "resnet50t.untrained": _ttcfg(first_conv="conv1.0"),
         "resnet101.a1_in1k": _rcfg(
@@ -1233,7 +1244,6 @@ default_cfgs = generate_default_cfgs(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet101.a3_in1k",
         ),
-        
         "resnet101.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet101.tv_in1k",
@@ -1308,7 +1318,7 @@ default_cfgs = generate_default_cfgs(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet152.tv_in1k",
             license="bsd-3-clause",
-            origin_url="https://github.com/pytorch/vision"
+            origin_url="https://github.com/pytorch/vision",
         ),
         "resnet152c.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1328,7 +1338,7 @@ default_cfgs = generate_default_cfgs(
         "resnet152s.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet152s.gluon_in1k",
-            first_conv="conv1.0"
+            first_conv="conv1.0",
         ),
         "resnet200.untrained": _ttcfg(),
         "resnet200d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
@@ -1352,12 +1362,11 @@ default_cfgs = generate_default_cfgs(
             interpolation="bilinear",
             crop_pct=0.875,
         ),
-        
         # ResNeXt
         "resnet50_gn.a1h_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50_gn.a1h_in1k",
-            crop_pct=0.94
+            crop_pct=0.94,
         ),
         "resnext50_32x4d.a1_in1k": _rcfg(hf_hub_id="JaxNN/"),
         "resnext50_32x4d.a1h_in1k": _rcfg(hf_hub_id="JaxNN/"),
@@ -1577,6 +1586,7 @@ default_cfgs = generate_default_cfgs(
 
 # BasicBlock models
 
+
 @register_model
 def resnet10t(pretrained: bool = False, **kwargs) -> ResNet:
     """Constructs a ResNet-10-T model."""
@@ -1644,6 +1654,7 @@ def resnet34d(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # Bottleneck models
+
 
 @register_model
 def resnet26(pretrained: bool = False, **kwargs) -> ResNet:
@@ -1827,6 +1838,7 @@ def resnet200d(pretrained: bool = False, **kwargs) -> ResNet:
 
 # Wide ResNet
 
+
 @register_model
 def wide_resnet50_2(pretrained: bool = False, **kwargs) -> ResNet:
     """Constructs a Wide ResNet-50-2 model."""
@@ -1844,10 +1856,9 @@ def wide_resnet101_2(pretrained: bool = False, **kwargs) -> ResNet:
 # ResNeXt
 @register_model
 def resnet50_gn(pretrained: bool = False, **kwargs) -> ResNet:
-    """Constructs a ResNet-50 model w/ GroupNorm
-    """
-    model_args = dict(block=Bottleneck, layers=(3, 4, 6, 3), norm_layer='groupnorm')
-    return _create_resnet('resnet50_gn', pretrained, **dict(model_args, **kwargs))
+    """Constructs a ResNet-50 model w/ GroupNorm"""
+    model_args = dict(block=Bottleneck, layers=(3, 4, 6, 3), norm_layer="groupnorm")
+    return _create_resnet("resnet50_gn", pretrained, **dict(model_args, **kwargs))
 
 
 @register_model
@@ -1920,6 +1931,7 @@ def resnext101_64x4d(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # Anti-aliased ResNets
+
 
 @register_model
 def resnetblur18(pretrained: bool = False, **kwargs) -> ResNet:
@@ -2019,6 +2031,7 @@ def resnetaa101d(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # SE-ResNet (requires attn_layer support)
+
 
 @register_model
 def seresnet18(pretrained: bool = False, **kwargs) -> ResNet:
@@ -2122,6 +2135,7 @@ def seresnetaa50d(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # SE-ResNeXt
+
 
 @register_model
 def seresnext26d_32x4d(pretrained: bool = False, **kwargs) -> ResNet:
@@ -2268,6 +2282,7 @@ def senet154(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # ECA-ResNet (requires attn_layer support)
+
 
 @register_model
 def ecaresnet26t(pretrained: bool = False, **kwargs) -> ResNet:
@@ -2421,6 +2436,7 @@ def ecaresnext50t_32x4d(pretrained: bool = False, **kwargs) -> ResNet:
 
 
 # ResNet-RS
+
 
 @register_model
 def resnetrs50(pretrained: bool = False, **kwargs) -> ResNet:
