@@ -1,4 +1,4 @@
-"""Data configuration utilities - mirrors timm.data.config."""
+"""Data configuration utilities"""
 
 from typing import Any, Dict, Optional
 

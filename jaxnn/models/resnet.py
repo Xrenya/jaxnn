@@ -66,7 +66,8 @@ def get_norm_layer(norm_layer: LayerType) -> Type[nnx.Module]:
     if callable(norm_layer):
         return norm_layer
     raise TypeError(
-        f"norm_layer must be a string alias or a callable class, got {type(norm_layer)}"
+        f"norm_layer must be a string alias or a callable class, "
+        f"got {type(norm_layer)}"
     )
 
 
@@ -1346,10 +1347,14 @@ default_cfgs = generate_default_cfgs(
             url="https://huggingface.co/JaxNN/resnet152d.gluon_in1k",
             first_conv="conv1.0",
         ),
-        "resnet152d.ra2_in1k": _ttcfg(
+        "resnet152d.ra2_in1k": _rcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet152d.ra2_in1k",
             first_conv="conv1.0",
+            input_size=(256, 256, 3),
+            pool_size=(8, 8),
+            test_input_size=(320, 320, 3),
+            test_crop_pct=1.0,
         ),
         "resnet152s.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1603,10 +1608,7 @@ default_cfgs = generate_default_cfgs(
 
 
 # Model registration functions
-
 # BasicBlock models
-
-
 @register_model
 def resnet10t(pretrained: bool = False, **kwargs) -> ResNet:
     """Constructs a ResNet-10-T model."""
