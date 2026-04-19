@@ -1,6 +1,6 @@
 """Image transforms for JaxNN - torchvision backend.
 
-Pipeline (identical structure to timm's transforms_imagenet_eval)
+Pipeline
 -----------------------------------------------------------------
 center mode (square input_size):
     Resize(scale_size, antialias=True)          # shorter-edge resize
@@ -45,7 +45,6 @@ from torchvision.transforms import (
 )
 
 
-# Interpolation string => torchvision InterpolationMode
 _INTERP_MAP = {
     "bilinear": InterpolationMode.BILINEAR,
     "bicubic": InterpolationMode.BICUBIC,
@@ -66,12 +65,7 @@ def _tv_interp(mode: str) -> InterpolationMode:
 
 # Padding helper for border crop mode
 def _pad_to_size(img: Image.Image, target_h: int, target_w: int) -> Image.Image:
-    """Zero-pad a PIL image to at least (target_h, target_w), centred.
-
-    Mirrors timm's CenterCropOrPad: if the image already meets or exceeds the
-    target on a given axis, that axis is left untouched.
-    torchvision TF.pad expects padding as (left, top, right, bottom).
-    """
+    """Zero-pad a PIL image to at least (target_h, target_w), centred"""
     w, h = img.size
     pad_top = max((target_h - h) // 2, 0)
     pad_left = max((target_w - w) // 2, 0)
@@ -197,8 +191,6 @@ class ImagenetEvalTransform:
 
         # 3. CHW => HWC numpy for JAX/Flax
         return tensor.permute(1, 2, 0).numpy()
-
-    # ------------------------------------------------------------------
 
     def _border_spatial(self, img: Image.Image) -> Image.Image:
         """Border-mode spatial ops: longest-edge resize, pad, crop."""
