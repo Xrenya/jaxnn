@@ -1017,18 +1017,16 @@ def _create_resnet(variant: str, pretrained: bool = False, **kwargs) -> ResNet:
 default_cfgs = generate_default_cfgs(
     {
         # ResNet (BasicBlock)
-        "resnet10t.c3_in1k": _cfg(
+        "resnet10t.c3_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet10t.c3_in1k",
-            input_size=(176, 176, 3),
-            pool_size=(6, 6),
+            input_size=(176, 176, 3), pool_size=(6, 6), test_crop_pct=0.95, test_input_size=(224, 224, 3),
             first_conv="conv1.0",
         ),
-        "resnet14t.c3_in1k": _cfg(
+        "resnet14t.c3_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet14t.c3_in1k",
-            input_size=(176, 176, 3),
-            pool_size=(6, 6),
+            input_size=(176, 176, 3), pool_size=(6, 6), test_crop_pct=0.95, test_input_size=(224, 224, 3),
             first_conv="conv1.0",
         ),
         "resnet18.a1_in1k": _rcfg(
@@ -1046,10 +1044,12 @@ default_cfgs = generate_default_cfgs(
         "resnet18.fb_ssl_yfcc100m_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.fb_ssl_yfcc100m_ft_in1k",
+            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models'
         ),
         "resnet18.fb_swsl_ig1b_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.fb_swsl_ig1b_ft_in1k",
+            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models'
         ),
         "resnet18.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1058,11 +1058,12 @@ default_cfgs = generate_default_cfgs(
         "resnet18.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.tv_in1k",
+            license='bsd-3-clause', origin_url='https://github.com/pytorch/vision'
         ),
         "resnet18d.ra4_e3600_r224_in1k": _ra4cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/ra4_e3600_r224_in1k.tv_in1k",
-            first_conv="conv1.0",
+            mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), crop_pct=0.9, first_conv='conv1.0'
         ),
         "resnet18d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
@@ -1080,6 +1081,7 @@ default_cfgs = generate_default_cfgs(
         "resnet34.a3_in1k": _r3cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.a3_in1k",
+            crop_pct=0.95,
         ),
         "resnet34.bt_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
@@ -1092,6 +1094,7 @@ default_cfgs = generate_default_cfgs(
         "resnet34.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.tv_in1k",
+            license='bsd-3-clause', origin_url='https://github.com/pytorch/vision',
         ),
         "resnet34d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
@@ -1101,6 +1104,7 @@ default_cfgs = generate_default_cfgs(
         "resnet34.ra4_e3600_r224_in1k": _ra4cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.ra4_e3600_r224_in1k",
+            mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), crop_pct=0.9,
         ),
         # ResNet (Bottleneck)
         "resnet26.bt_in1k": _ttcfg(
@@ -1114,14 +1118,18 @@ default_cfgs = generate_default_cfgs(
         ),
         "resnet26t.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
-            first_conv="conv1.0",
             url="https://huggingface.co/JaxNN/resnet26t.ra2_in1k",
+            first_conv='conv1.0', input_size=(256, 256, 3), pool_size=(8, 8),
+            crop_pct=0.94, test_input_size=(320, 320, 3), test_crop_pct=1.0),
         ),
         "resnet50.a1_in1k": _rcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.a1_in1k",
         ),
-        "resnet50.a1h_in1k": _rcfg(hf_hub_id="JaxNN/"),
+        "resnet50.a1h_in1k": _rcfg(
+            hf_hub_id="JaxNN/",
+            input_size=(176, 176, 3), pool_size=(6, 6), crop_pct=0.9, test_input_size=(224, 224, 3), test_crop_pct=1.0
+        ),
         "resnet50.a2_in1k": _rcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.a2_in1k",
@@ -1169,8 +1177,12 @@ default_cfgs = generate_default_cfgs(
         "resnet50.fb_ssl_yfcc100m_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.fb_ssl_yfcc100m_ft_in1k",
+            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models',
         ),
-        "resnet50.fb_swsl_ig1b_ft_in1k": _cfg(hf_hub_id="JaxNN/"),
+        "resnet50.fb_swsl_ig1b_ft_in1k": _cfg(
+            hf_hub_id="JaxNN/",
+            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models'
+        ),
         "resnet50.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.gluon_in1k",
@@ -1178,6 +1190,7 @@ default_cfgs = generate_default_cfgs(
         "resnet50.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.tv_in1k",
+            license='bsd-3-clause', origin_url='https://github.com/pytorch/vision'
         ),
         "resnet50.tv2_in1k": _cfg(
             hf_hub_id="JaxNN/",
@@ -1215,7 +1228,9 @@ default_cfgs = generate_default_cfgs(
             url="https://huggingface.co/JaxNN/resnet50d.ra2_in1k",
         ),
         "resnet50d.ra4_e3600_r224_in1k": _ra4cfg(
-            hf_hub_id="JaxNN/", first_conv="conv1.0"
+            hf_hub_id="JaxNN/", first_conv="conv1.0",
+            mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
+            crop_pct=0.95, test_input_size=(288, 288, 3), test_crop_pct=1.0,
         ),
         "resnet50s.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1277,7 +1292,8 @@ default_cfgs = generate_default_cfgs(
         "resnet101d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet101d.ra2_in1k",
-            first_conv="conv1.0",
+            first_conv="conv1.0", input_size=(256, 256, 3), pool_size=(8, 8), crop_pct=0.95,
+            test_crop_pct=1.0, test_input_size=(320, 320, 3)
         ),
         "resnet101s.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1341,7 +1357,11 @@ default_cfgs = generate_default_cfgs(
             first_conv="conv1.0",
         ),
         "resnet200.untrained": _ttcfg(),
-        "resnet200d.ra2_in1k": _ttcfg(hf_hub_id="JaxNN/", first_conv="conv1.0"),
+        "resnet200d.ra2_in1k": _ttcfg(
+            hf_hub_id="JaxNN/", first_conv="conv1.0",
+            input_size=(256, 256, 3), pool_size=(8, 8), crop_pct=0.95,
+            test_crop_pct=1.0, test_input_size=(320, 320, 3)
+        ),
         # Wide ResNet
         "wide_resnet50_2.racm_in1k": _ttcfg(hf_hub_id="JaxNN/"),
         "wide_resnet50_2.tv2_in1k": _cfg(
