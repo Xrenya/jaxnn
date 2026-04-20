@@ -1121,7 +1121,7 @@ default_cfgs = generate_default_cfgs(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet26t.ra2_in1k",
             first_conv='conv1.0', input_size=(256, 256, 3), pool_size=(8, 8),
-            crop_pct=0.94, test_input_size=(320, 320, 3), test_crop_pct=1.0),
+            crop_pct=0.94, test_input_size=(320, 320, 3), test_crop_pct=1.0,
         ),
         "resnet50.a1_in1k": _rcfg(
             hf_hub_id="JaxNN/",
