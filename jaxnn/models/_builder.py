@@ -631,7 +631,30 @@ def build_model_with_cfg(
 
     if checkpoint_path is not None:
         resolved_cfg = _merge_checkpoint_cfg(resolved_cfg, checkpoint_path)
-
+    elif pretrained and resolved_cfg.hf_hub_id:
+        try:
+            from jaxnn.models._hub import load_model_config_from_hf
+            hub_pcfg, _, _ = load_model_config_from_hf(
+                resolved_cfg.hf_hub_id, cache_dir=cache_dir
+            )
+            hub_fields = {
+                k: v for k, v in hub_pcfg.items()
+                if k not in ("hf_hub_id", "source", "architecture")
+            }
+            import dataclasses
+            valid = {f.name for f in dataclasses.fields(resolved_cfg)}
+            hub_fields = {k: v for k, v in hub_fields.items() if k in valid}
+            # Apply hub fields first, then any explicit overlay on top
+            resolved_cfg = dataclasses.replace(resolved_cfg, **hub_fields)
+            if pretrained_cfg_overlay:
+                resolved_cfg = dataclasses.replace(resolved_cfg, **{
+                    k: v for k, v in pretrained_cfg_overlay.items() if k in valid
+                })
+        except Exception as e:
+            _logger.warning(
+                "Could not read config.json from Hub (%s): %s — using registry cfg.",
+                resolved_cfg.hf_hub_id, e,
+            )
     pretrained_cfg_dict = resolved_cfg.to_dict()
 
     seed = pretrained_cfg_dict.get("rngs", 0)
@@ -661,8 +684,7 @@ def build_model_with_cfg(
         _logger.warning("Pruned model loading is not yet implemented for Flax/JAX")
 
     num_classes_pretrained = (
-        0
-        if features
+        0 if features
         else getattr(model, "num_classes", kwargs.get("num_classes", 1000))
     )
 
