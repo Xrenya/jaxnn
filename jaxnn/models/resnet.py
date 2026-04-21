@@ -6,8 +6,11 @@ Copyright of original work: 2019 Ross Wightman
 Hacked together by / Copyright 2026 Rinat Shaymukhametov
 """
 
+import functools
 import jax
 from flax import nnx
+from flax.typing import Dtype, PromoteDtypeFn, PrecisionLike
+from flax.nnx.nn import dtypes as flax_dtypes
 import jax.numpy as jnp
 from functools import partial
 
@@ -71,6 +74,48 @@ def get_norm_layer(norm_layer: LayerType) -> Type[nnx.Module]:
     )
 
 
+def wrap_norm_layer(
+    norm_cls: Type[nnx.Module],
+    dtype: Optional[Dtype] = None,
+    param_dtype: Dtype = jnp.float32,
+    promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+) -> Callable:
+    """Return a norm-layer factory with dtype/param_dtype/promote_dtype pre-bound.
+
+    The returned callable has the same ``(num_features, *, rngs)`` signature
+    expected everywhere in this file, so all call sites remain unchanged.
+
+    Args:
+        norm_cls: A norm-layer class (``nnx.BatchNorm``, ``nnx.LayerNorm``,
+            ``nnx.GroupNorm``, or any compatible custom class).
+        dtype: Output (activation) dtype of the norm layer.  ``None`` lets
+            Flax infer it from the inputs (default behaviour).  Pass
+            ``jnp.float32`` to keep activations in full precision when the
+            model otherwise runs in a lower-precision dtype (e.g. bfloat16).
+        param_dtype: Storage dtype for the learnable scale/bias parameters.
+            Defaults to ``jnp.float32`` — matching Flax's own default and
+            the standard mixed-precision recommendation (keep parameters in
+            float32 regardless of activation dtype).
+        promote_dtype: Callable that casts ``(x, scale, bias)`` before the
+            normalisation arithmetic.  Defaults to Flax's built-in promotion
+            function.
+
+    Returns:
+        A callable ``factory(num_features, *, rngs)`` that constructs the
+        norm layer with the pre-bound dtype settings.
+    """
+    @functools.wraps(norm_cls)
+    def factory(num_features: int, *, rngs: nnx.Rngs) -> nnx.Module:
+        return norm_cls(
+            num_features,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            promote_dtype=promote_dtype,
+            rngs=rngs,
+        )
+    return factory
+
+
 class Downsample(nnx.Module):
     def __init__(
         self,
@@ -83,6 +128,14 @@ class Downsample(nnx.Module):
         norm_layer: Optional[Type[nnx.Module]] = None,
         padding: Union[str, Tuple[int, int]] = "SAME",
         use_bias: bool = False,
+        dtype: Optional[Dtype] = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike = None,
+        promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         *,
         rngs: nnx.Rngs,
     ) -> None:
@@ -101,10 +154,20 @@ class Downsample(nnx.Module):
             kernel_dilation=first_dilation,
             padding=padding,
             use_bias=use_bias,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
             rngs=rngs,
         )
         norm_layer = norm_layer or nnx.BatchNorm
-        self.bn = norm_layer(num_features=out_channels, rngs=rngs)
+        self.bn = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )(num_features=out_channels, rngs=rngs)
 
     def __call__(self, x: jax.Array) -> jax.Array:
         x = self.conv(x)
@@ -176,7 +239,16 @@ class AdaptiveAvgPool2D(nnx.Module):
 
 class Classifier(nnx.Module):
     def __init__(
-        self, num_pooled_features: int, num_classes: int, *, rngs: nnx.Rngs
+        self,
+        num_pooled_features: int,
+        num_classes: int,
+        dtype: Optional[Dtype] = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike = None,
+        promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        preferred_element_type: Optional[Dtype] = None,
+        *,
+        rngs: nnx.Rngs,
     ) -> None:
         self.in_features = num_pooled_features
         self.out_features = num_classes
@@ -184,7 +256,14 @@ class Classifier(nnx.Module):
             self.fc = Identity()
         else:
             self.fc = nnx.Linear(
-                in_features=num_pooled_features, out_features=num_classes, rngs=rngs
+                in_features=num_pooled_features,
+                out_features=num_classes,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                precision=precision,
+                promote_dtype=promote_dtype,
+                preferred_element_type=preferred_element_type,
+                rngs=rngs,
             )
 
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -213,6 +292,14 @@ class BasicBlock(nnx.Module):
         aa_layer: Optional[Type[nnx.Module]] = None,
         drop_block: Optional[Type[nnx.Module]] = None,
         drop_path: Optional[nnx.Module] = None,
+        dtype: Optional[Dtype] = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike = None,
+        promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
     ) -> None:
         assert cardinality == 1, "BasicBlock only supports cardinality of 1"
         assert base_width == 64, "BasicBlock does not support changing base width"
@@ -224,6 +311,16 @@ class BasicBlock(nnx.Module):
             strides[0] == 2 or first_dilation[0] != dilation[0]
         )
 
+        # Common conv kwargs for dtype/precision control
+        conv_kwargs = dict(
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
+        )
+        _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
+
         self.conv1 = nnx.Conv(
             in_features=inplanes,
             out_features=first_planes,
@@ -233,8 +330,9 @@ class BasicBlock(nnx.Module):
             kernel_dilation=first_dilation,
             use_bias=False,
             rngs=rngs,
+            **conv_kwargs,
         )
-        self.bn1 = norm_layer(num_features=first_planes, rngs=rngs)
+        self.bn1 = _norm(num_features=first_planes, rngs=rngs)
         self.drop_block = (
             drop_block(rngs=rngs) if drop_block is not None else nnx.identity
         )
@@ -250,8 +348,9 @@ class BasicBlock(nnx.Module):
             kernel_dilation=dilation,
             use_bias=False,
             rngs=rngs,
+            **conv_kwargs,
         )
-        self.bn2 = norm_layer(num_features=out_planes, rngs=rngs)
+        self.bn2 = _norm(num_features=out_planes, rngs=rngs)
 
         self.se = attn_layer(out_planes, rngs=rngs) if attn_layer is not None else None
         self.act2 = Activation(act_layer)
@@ -309,6 +408,14 @@ class Bottleneck(nnx.Module):
         aa_layer: Optional[Type[nnx.Module]] = None,
         drop_block: Optional[Type[nnx.Module]] = None,
         drop_path: Optional[nnx.Module] = None,
+        dtype: Optional[Dtype] = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike = None,
+        promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
     ) -> None:
         width = int(planes * (base_width / 64.0)) * cardinality
         first_planes = width // reduce_first
@@ -318,14 +425,25 @@ class Bottleneck(nnx.Module):
             strides[0] == 2 or first_dilation[0] != dilation[0]
         )
 
+        # Common conv kwargs for dtype/precision control
+        conv_kwargs = dict(
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
+        )
+        _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
+
         self.conv1 = nnx.Conv(
             in_features=inplanes,
             out_features=first_planes,
             kernel_size=(1, 1),
             use_bias=False,
             rngs=rngs,
+            **conv_kwargs,
         )
-        self.bn1 = norm_layer(num_features=first_planes, rngs=rngs)
+        self.bn1 = _norm(num_features=first_planes, rngs=rngs)
         self.act1 = Activation(act_layer)
 
         self.conv2 = nnx.Conv(
@@ -338,8 +456,9 @@ class Bottleneck(nnx.Module):
             feature_group_count=cardinality,
             use_bias=False,
             rngs=rngs,
+            **conv_kwargs,
         )
-        self.bn2 = norm_layer(num_features=width, rngs=rngs)
+        self.bn2 = _norm(num_features=width, rngs=rngs)
         self.drop_block = (
             drop_block(rngs=rngs) if drop_block is not None else nnx.identity
         )
@@ -352,8 +471,9 @@ class Bottleneck(nnx.Module):
             kernel_size=(1, 1),
             use_bias=False,
             rngs=rngs,
+            **conv_kwargs,
         )
-        self.bn3 = norm_layer(num_features=out_planes, rngs=rngs)
+        self.bn3 = _norm(num_features=out_planes, rngs=rngs)
 
         self.se = attn_layer(out_planes, rngs=rngs) if attn_layer is not None else None
         self.act3 = Activation(act_layer)
@@ -430,12 +550,21 @@ def downsample_avg(
     norm_layer: Optional[Type[nnx.Module]] = None,
     padding: Union[str, Tuple[int, int]] = "SAME",
     use_bias: bool = False,
+    dtype: Optional[Dtype] = None,
+    param_dtype: Dtype = jnp.float32,
+    precision: PrecisionLike = None,
+    promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+    preferred_element_type: Optional[Dtype] = None,
+    norm_dtype: Optional[Dtype] = jnp.float32,
+    norm_param_dtype: Dtype = jnp.float32,
+    norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
     *,
     rngs: nnx.Rngs,
 ) -> nnx.Module:
     norm_layer = norm_layer or nnx.BatchNorm
     avg_stride: Tuple[int, int] = strides if dilation == (1, 1) else (1, 1)
     need_pool = avg_stride[0] > 1 or (dilation[0] > 1 and strides[0] > 1)
+    _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
 
     class AvgDownsample(nnx.Module):
         def __init__(self):
@@ -453,9 +582,14 @@ def downsample_avg(
                 kernel_size=(1, 1),
                 strides=(1, 1),
                 use_bias=use_bias,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                precision=precision,
+                promote_dtype=promote_dtype,
+                preferred_element_type=preferred_element_type,
                 rngs=rngs,
             )
-            self.bn = norm_layer(num_features=out_channels, rngs=rngs)
+            self.bn = _norm(num_features=out_channels, rngs=rngs)
 
         def __call__(self, x: jax.Array) -> jax.Array:
             if self.pool is not None:
@@ -527,6 +661,14 @@ def make_blocks(
                 dilation=dilation,
                 first_dilation=prev_dilation,
                 norm_layer=kwargs.get("norm_layer"),
+                dtype=kwargs.get("dtype"),
+                param_dtype=kwargs.get("param_dtype", jnp.float32),
+                precision=kwargs.get("precision"),
+                promote_dtype=kwargs.get("promote_dtype", flax_dtypes.promote_dtype),
+                preferred_element_type=kwargs.get("preferred_element_type"),
+                norm_dtype=kwargs.get("norm_dtype", jnp.float32),
+                norm_param_dtype=kwargs.get("norm_param_dtype", jnp.float32),
+                norm_promote_dtype=kwargs.get("norm_promote_dtype", flax_dtypes.promote_dtype),
                 rngs=kwargs.get("rngs"),
             )
             downsample = (
@@ -576,6 +718,14 @@ def _build_stem(
     act_layer: LayerType,
     norm_layer: LayerType,
     rngs: nnx.Rngs,
+    dtype: Optional[Dtype] = None,
+    param_dtype: Dtype = jnp.float32,
+    precision: PrecisionLike = None,
+    promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+    preferred_element_type: Optional[Dtype] = None,
+    norm_dtype: Optional[Dtype] = jnp.float32,
+    norm_param_dtype: Dtype = jnp.float32,
+    norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
 ) -> nnx.Module:
     """Build the stem conv block for all ResNet variants.
 
@@ -593,6 +743,16 @@ def _build_stem(
                       tn stem_width=32  (24, 32, 64),  avg_down=True
     """
     deep_stem = "deep" in stem_type
+
+    # Common conv kwargs for dtype/precision control
+    conv_kwargs = dict(
+        dtype=dtype,
+        param_dtype=param_dtype,
+        precision=precision,
+        promote_dtype=promote_dtype,
+        preferred_element_type=preferred_element_type,
+    )
+    _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
 
     if deep_stem:
         if "tiered" in stem_type:
@@ -624,8 +784,9 @@ def _build_stem(
                 padding=(1, 1),
                 use_bias=False,
                 rngs=rngs,
+                **conv_kwargs,
             ),
-            norm_layer(num_features=stem_chs[0], rngs=rngs),
+            _norm(num_features=stem_chs[0], rngs=rngs),
             Activation(act_layer),
             nnx.Conv(
                 in_features=stem_chs[0],
@@ -635,8 +796,9 @@ def _build_stem(
                 padding=(1, 1),
                 use_bias=False,
                 rngs=rngs,
+                **conv_kwargs,
             ),
-            norm_layer(num_features=stem_chs[1], rngs=rngs),
+            _norm(num_features=stem_chs[1], rngs=rngs),
             Activation(act_layer),
             nnx.Conv(
                 in_features=stem_chs[1],
@@ -646,6 +808,7 @@ def _build_stem(
                 padding=(1, 1),
                 use_bias=False,
                 rngs=rngs,
+                **conv_kwargs,
             ),
         )
     else:
@@ -657,6 +820,7 @@ def _build_stem(
             padding=(3, 3),
             use_bias=False,
             rngs=rngs,
+            **conv_kwargs,
         )
 
 
@@ -671,6 +835,34 @@ class ResNet(nnx.Module):
                           - variant s  (stem_width=64, widths 64-64-128)
       ``"deep_tiered"``   - variant t  (stem_width=32, widths 24-48-64, avg_down=True)
       ``"deep_tieredn"``  - variant tn (stem_width=32, widths 24-32-64, avg_down=True)
+
+    Dtype / precision knobs (applied uniformly to all ``nnx.Conv`` calls):
+
+      ``precision``
+          XLA dot-product precision passed directly to ``nnx.Conv``.
+          Accepts ``jax.lax.Precision`` enum values, string shortcuts
+          (``"highest"``, ``"high"``, ``"default"``), or a 2-tuple for
+          asymmetric LHS/RHS precision.  ``None`` (default) lets XLA
+          choose, which is typically ``"default"`` precision.  On TPUs,
+          ``"default"`` maps to bfloat16 matrix units; use
+          ``"highest"`` for full float32 accumulation when numerical
+          fidelity matters more than throughput.
+
+      ``promote_dtype``
+          A callable ``(inputs, kernel, bias, *, dtype) -> (inputs, kernel, bias)``
+          that casts operands before the convolution.  The default
+          (``flax.nnx.nn.dtypes.promote_dtype``) promotes all operands
+          to a common dtype derived from the inputs.  Pass a custom
+          function to implement mixed-precision strategies, e.g. keeping
+          weights in ``float32`` while inputs are ``bfloat16``.
+
+      ``preferred_element_type``
+          Passed to ``jax.lax.conv_general_dilated`` as
+          ``preferred_element_type``.  Controls the *output* accumulation
+          dtype of the dot product independently of the operand dtypes,
+          e.g. ``jnp.float32`` with ``bfloat16`` weights to accumulate
+          in higher precision.  ``None`` (default) lets JAX infer this
+          from the operand types.
     """
 
     def __init__(
@@ -698,6 +890,14 @@ class ResNet(nnx.Module):
         drop_block_rate: float = 0.0,
         zero_init_last: bool = True,
         block_args: Optional[Dict[str, Any]] = None,
+        dtype: Optional[Dtype] = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike = None,
+        promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         *,
         rngs: nnx.Rngs,
     ) -> None:
@@ -713,6 +913,21 @@ class ResNet(nnx.Module):
         deep_stem = "deep" in stem_type
         inplanes = stem_width * 2 if deep_stem else 64
 
+        # Shared dtype/precision kwargs — forwarded to every nnx.Conv and nnx.Linear
+        dtype_kwargs = dict(
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
+        )
+        # Norm-layer dtype kwargs — forwarded to every norm layer via wrap_norm_layer
+        norm_kwargs = dict(
+            norm_dtype=norm_dtype,
+            norm_param_dtype=norm_param_dtype,
+            norm_promote_dtype=norm_promote_dtype,
+        )
+
         self.conv1 = _build_stem(
             in_chans=in_chans,
             inplanes=inplanes,
@@ -721,8 +936,15 @@ class ResNet(nnx.Module):
             act_layer=act_layer,
             norm_layer=norm_layer,
             rngs=rngs,
+            **dtype_kwargs,
+            **norm_kwargs,
         )
-        self.bn1 = norm_layer(num_features=inplanes, rngs=rngs)
+        self.bn1 = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )(num_features=inplanes, rngs=rngs)
         self.act1 = Activation(act_layer)
         self.feature_info = [dict(num_chs=inplanes, reduction=2, module="act1")]
 
@@ -737,8 +959,14 @@ class ResNet(nnx.Module):
                     padding=(1, 1),
                     use_bias=False,
                     rngs=rngs,
+                    **dtype_kwargs,
                 ),
-                norm_layer(num_features=inplanes, rngs=rngs),
+                wrap_norm_layer(
+                    norm_layer,
+                    dtype=norm_dtype,
+                    param_dtype=norm_param_dtype,
+                    promote_dtype=norm_promote_dtype,
+                )(num_features=inplanes, rngs=rngs),
                 Activation(act_layer),
             )
         else:
@@ -775,6 +1003,8 @@ class ResNet(nnx.Module):
             aa_layer=aa_layer,
             drop_block_rate=drop_block_rate,
             drop_path_rate=drop_path_rate,
+            **dtype_kwargs,
+            **norm_kwargs,
             **block_args,
             rngs=rngs,
         )
@@ -787,7 +1017,9 @@ class ResNet(nnx.Module):
         self.head_drop = (
             nnx.Dropout(rate=drop_rate, rngs=rngs) if drop_rate > 0.0 else None
         )
-        self.fc = Classifier(self.num_features, self.num_classes, rngs=rngs)
+        self.fc = Classifier(
+            self.num_features, self.num_classes, rngs=rngs, **dtype_kwargs
+        )
 
         if zero_init_last:
             for module in self.stage_modules:
@@ -1629,7 +1861,7 @@ def resnet14t(pretrained: bool = False, **kwargs) -> ResNet:
         block=Bottleneck,
         layers=(1, 1, 1, 1),
         stem_width=32,
-        stem_type="deep_tiered",
+        stem_type="deep_tieredn",
         avg_down=True,
     )
     return _create_resnet("resnet14t", pretrained, **dict(model_args, **kwargs))

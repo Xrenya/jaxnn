@@ -128,6 +128,7 @@ def _merge_checkpoint_cfg(
 
     # Always point load_pretrained to the local directory
     overlay["local_dir"] = str(checkpoint_path)
+    overlay["hf_hub_id"] = None
 
     # Filter to only keys that PretrainedCfg actually accepts
     valid_fields = {f.name for f in dataclasses.fields(PretrainedCfg)}
@@ -269,7 +270,10 @@ def _resolve_pretrained_source(cfg: dict) -> Tuple[Optional[str], Any]:
         p = Path(local_dir)
         if p.exists():
             return "local-dir", str(p)
-        _logger.warning("local_dir '%s' does not exist — falling back.", local_dir)
+        raise FileNotFoundError(
+            f"checkpoint_path '{local_dir}' does not exist. "
+            f"Check the path and try again."
+        )
 
     # Legacy local-path keys
     for key in ("file", "folder"):
@@ -451,7 +455,7 @@ def _apply_flat_state_dict(
             shape_mismatches.append(key)
             continue
 
-        var_state.value = arr
+        var_state.raw_value = arr
 
     nnx.update(model, state)
 
@@ -656,7 +660,12 @@ def build_model_with_cfg(
                 resolved_cfg.hf_hub_id, e,
             )
     pretrained_cfg_dict = resolved_cfg.to_dict()
-
+    if checkpoint_path is not None:
+        pretrained_cfg_dict["local_dir"] = str(checkpoint_path)
+        pretrained_cfg_dict["hf_hub_id"] = None
+    for k, v in (pretrained_cfg_dict.get("model_args") or {}).items():
+        kwargs[k] = v
+        
     seed = pretrained_cfg_dict.get("rngs", 0)
     rngs = dict(rngs=nnx.Rngs(seed))
     kwargs.update(rngs)
