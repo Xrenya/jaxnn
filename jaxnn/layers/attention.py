@@ -39,7 +39,7 @@ def attention_to_mha(attn: "Attention") -> nnx.MultiHeadAttention:
         rngs=attn.rngs
     )
 
-    w_qkv = attn.qkv.kernel[...]          # read: [...] on Variable returns the array
+    w_qkv = attn.qkv.kernel[...]
     wq, wk, wv = jnp.split(w_qkv, 3, axis=-1)
 
     mha.query.kernel[...] = wq.reshape(dim, num_heads, head_dim)
