@@ -1,4 +1,4 @@
-"""Vision Transformer (ViT) in Jax/Falx
+"""Vision Transformer (ViT) in Jax/Flax
 
 A Jax implement of Vision Transformers as described in:
 
