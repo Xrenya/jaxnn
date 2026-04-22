@@ -12,19 +12,13 @@ def rope_rotate_half(x: jax.Array) -> jax.Array:
     # x:   [ x0  x1  x2  x3  x4  x5]
     # out: [-x3 -x4 -x5  x0  x1  x2]
     x1, x2 = jnp.split(x, 2, axis=-1)
-    return jnp.concatenate(
-        [-x2, -x1], -1
-    ).reshape(x.shape)
-    
+    return jnp.concatenate([-x2, -x1], -1).reshape(x.shape)
+
 
 def rot(x: jax.Array) -> jax.Array:
     # x:   [ x0  x1  x2  x3  x4  x5]
     # out: [-x1  x0 -x3  x2 -x5  x4]
-    return jnp.concatenate(
-        [
-            -x[..., 1::2], -x[..., 0::2]
-        ], -1
-    ).reshape(x.shape)
+    return jnp.concatenate([-x[..., 1::2], -x[..., 0::2]], -1).reshape(x.shape)
 
 
 def apply_rot_embed_cat(

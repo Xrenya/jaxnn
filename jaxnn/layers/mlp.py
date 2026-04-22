@@ -9,7 +9,9 @@ from flax.nnx.nn import dtypes as flax_dtypes
 
 
 class Mlp(nnx.Module):
-    def __init__(self,):
+    def __init__(
+        self,
+    ):
         pass
 
     def __call__(self, x: jax.Array):

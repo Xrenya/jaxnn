@@ -9,9 +9,11 @@ from flax.nnx.nn import dtypes as flax_dtypes
 
 
 class PatchEmbed(nnx.Module):
-    """ 2D Image to Patch Embedding
-    """
-    def __init__(self,):
+    """2D Image to Patch Embedding"""
+
+    def __init__(
+        self,
+    ):
         pass
 
     def __call__(self, x: jax.Array):

@@ -12,12 +12,7 @@ from .pos_embed_sincon import apply_rot_embed_cat
 
 _logger = logging.getLogger(__name__)
 
-__all__ = [
-    "Attention",
-    "AttentionRope",
-    "maybe_add_mask",
-    "resolve_self_attn_mask"
-]
+__all__ = ["Attention", "AttentionRope", "maybe_add_mask", "resolve_self_attn_mask"]
 
 
 def maybe_add_mask(score: jax.Array, attn_mask: Optional[jax.Array] = None):
@@ -35,13 +30,15 @@ def resolve_self_attn_mask(
     """
     if is_causal:
         # upper-triangular filled with -inf, diagonal = 0 (same as triu_(1))
-        attn_bias = jnp.full((seq_len, seq_len), float('-inf'))
+        attn_bias = jnp.full((seq_len, seq_len), float("-inf"))
         attn_bias = jnp.triu(attn_bias, k=1)
     elif attn_mask is None:
         attn_bias = None
     elif attn_mask.dtype == jnp.bool_:
         # bool mask: True = keep, False = mask out (same as masked_fill_(~mask, -inf))
-        attn_bias = jnp.where(attn_mask, jnp.zeros_like(attn_mask, dtype=attn.dtype), float('-inf'))
+        attn_bias = jnp.where(
+            attn_mask, jnp.zeros_like(attn_mask, dtype=attn.dtype), float("-inf")
+        )
     else:
         attn_bias = attn_mask.astype(attn.dtype)
     return attn_bias
@@ -343,6 +340,7 @@ class AttentionRope(nnx.Module):
      * Attention output (scale) normalization
      * Fused or unfused QKV projection support
     """
+
     def __init__(
         self,
         dim: int,
@@ -386,7 +384,7 @@ class AttentionRope(nnx.Module):
             scale_norm: Enable normalization (scaling) of attention output with norm_layer
             proj_bias: Whether to use bias in the output projection
             rotate_half: Use 'half' ROPE layout instead of default 'interleaved'
-            
+
             ``precision``
                 XLA dot-product precision passed directly to ``nnx.Conv``.
                 Accepts ``jax.lax.Precision`` enum values, string shortcuts
@@ -428,15 +426,17 @@ class AttentionRope(nnx.Module):
         dim_out = dim_out or dim
         head_dim = attn_head_dim
         if head_dim is None:
-            assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+            assert dim % num_heads == 0, "dim should be divisible by num_heads"
             head_dim = dim // num_heads
         if scale_norm or qk_norm:
-            assert norm_layer is not None, 'norm_layer must be provided if qk_norm or scale_norm is True'
+            assert norm_layer is not None, (
+                "norm_layer must be provided if qk_norm or scale_norm is True"
+            )
 
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.attn_dim = head_dim * num_heads
-        self.scale = head_dim ** -0.5
+        self.scale = head_dim**-0.5
         self.num_prefix_tokens = num_prefix_tokens
         self.fused_attn = fused_attn
         self.rotate_half = rotate_half
@@ -486,7 +486,7 @@ class AttentionRope(nnx.Module):
             **dtype_kwargs,
         )
         self.proj_drop = nnx.Dropout(rate=proj_drop)
-        
+
         self.qkv_fused = qkv_fused
         self.rngs = rngs
 
@@ -535,7 +535,7 @@ class AttentionRope(nnx.Module):
                 .reshape(B, N, self.num_heads, self.head_dim)
                 .tranpose(0, 2, 1, 3)
             )
-        
+
         q, k = self.q_norm(q), self.k_norm(k)
 
         if rope is not None:
@@ -544,23 +544,17 @@ class AttentionRope(nnx.Module):
             q = jnp.concatenate(
                 [
                     q[:, :, :npt, :],
-                    apply_rot_embed_cat(
-                        q[:, :, npt:, :],
-                        rope,
-                        half=half
-                    ),
-                ], axis=2
+                    apply_rot_embed_cat(q[:, :, npt:, :], rope, half=half),
+                ],
+                axis=2,
             )
-            
+
             k = jnp.concatenate(
                 [
                     k[:, :, :npt, :],
-                    apply_rot_embed_cat(
-                        k[:, :, npt:, :],
-                        rope,
-                        half=half
-                    ),
-                ], axis=2
+                    apply_rot_embed_cat(k[:, :, npt:, :], rope, half=half),
+                ],
+                axis=2,
             )
 
         if self.fused_attn:

@@ -4,6 +4,7 @@ Paper: 'Differential Transformer' - https://arxiv.org/abs/2410.05258
 
 Reference impl: https://github.com/microsoft/unilm/tree/master/Diff-Transformer
 """
+
 import math
 from typing import Optional, Type
 

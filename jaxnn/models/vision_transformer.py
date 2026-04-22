@@ -57,13 +57,13 @@ from jaxnn.models._builder import build_model_with_cfg
 LayerType = Union[str, Callable, Type[nnx.Module]]
 
 
-__all__ = ['VisionTransformer']
+__all__ = ["VisionTransformer"]
 
 
 ATTN_LAYERS = {
     "": Attention,
     "attn": Attention,
-    'diff': DiffAttention,
+    "diff": DiffAttention,
 }
 
 
@@ -73,28 +73,34 @@ class PatchEmbed(nnx.Module):
 
     def __call__(self, x: jax.Array):
         return x
-    
+
+
 class Block(nnx.Module):
-    def __init__(self,):
+    def __init__(
+        self,
+    ):
         pass
 
     def __call__(self, x: jax.Array):
         return x
-    
+
 
 class VisionTransformer(nnx.Module):
-    """ Vision Transformer
+    """Vision Transformer
 
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`
         - https://arxiv.org/abs/2010.11929
     """
+
     def __init__(
         self,
         img_size: Union[int, Tuple[int, int]] = 224,
         patch_size: Union[int, Tuple[int, int]] = 16,
         in_chans: int = 3,
         num_classes: int = 1000,
-        global_pool: Literal["", "avg", "avgmax", "max", "token", "map", "prr"] = "token",
+        global_pool: Literal[
+            "", "avg", "avgmax", "max", "token", "map", "prr"
+        ] = "token",
         embed_dim: int = 768,
         depth: int = 12,
         num_heads: int = 12,
