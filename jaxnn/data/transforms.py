@@ -111,7 +111,7 @@ class ImagenetEvalTransform:
         if isinstance(input_size, int):
             self.crop_h = self.crop_w = input_size
         else:
-            # Strip leading channel dim if HWC tuple e.g. (224, 224, 3) from data_config
+            # Strip last channel dim if HWC tuple e.g. (224, 224, 3) from data_config
             if len(input_size) == 3:
                 input_size = input_size[:-1]
             self.crop_h, self.crop_w = int(input_size[0]), int(input_size[1])
@@ -157,7 +157,7 @@ class ImagenetEvalTransform:
                 )
             elif crop_pct == 1.0:
                 # crop_pct=1.0: scale_size == crop_size, so Resize directly to target.
-                # No crop needed — timm does a direct fixed-size resize (both axes),
+                # No crop needed - timm does a direct fixed-size resize (both axes),
                 # equivalent to squash but via the center path.
                 self._spatial = Resize(
                     (self.crop_h, self.crop_w), interpolation=tv_interp, antialias=True
