@@ -29,7 +29,11 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 
 from jaxnn.layers import (
-    to_ntuple, Activation, MaxPool2D, AvgPool2D, Identity,
+    to_ntuple,
+    Activation,
+    MaxPool2D,
+    AvgPool2D,
+    Identity,
     Attention,
     # DiffAttention,
     # AttentionPoolLatent,
@@ -51,7 +55,7 @@ LayerType = Union[str, Callable, Type[nnx.Module]]
 
 
 ATTN_LAYERS = {
-    '': Attention,
-    'attn': Attention,
+    "": Attention,
+    "attn": Attention,
     # 'diff': DiffAttention,
 }

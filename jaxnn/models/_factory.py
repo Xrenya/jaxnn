@@ -107,14 +107,22 @@ def create_model(
             model_name_bare, cache_dir=cache_dir
         )
         if _cfg_model_args:
-            pretrained_cfg_overlay = {**_cfg_model_args, **(pretrained_cfg_overlay or {})}
+            pretrained_cfg_overlay = {
+                **_cfg_model_args,
+                **(pretrained_cfg_overlay or {}),
+            }
         pretrained = True
 
     elif source == "local-dir":
         _dir = checkpoint_path if checkpoint_path is not None else model_name_bare
-        pretrained_cfg, model_name_bare, _cfg_model_args = load_model_config_from_path(_dir)
+        pretrained_cfg, model_name_bare, _cfg_model_args = load_model_config_from_path(
+            _dir
+        )
         if _cfg_model_args:
-            pretrained_cfg_overlay = {**_cfg_model_args, **(pretrained_cfg_overlay or {})}
+            pretrained_cfg_overlay = {
+                **_cfg_model_args,
+                **(pretrained_cfg_overlay or {}),
+            }
         pretrained = True
         checkpoint_path = None  # consumed - prevent double load in builder
 

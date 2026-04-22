@@ -14,7 +14,7 @@ Usage
 
 Output format
 -------------
-Every transform returned by this module outputs a 
+Every transform returned by this module outputs a
 **numpy array of shape (H, W, C), dtype float32**.
 Pass it to ``jnp.array()`` and add a batch dim with ``[None]``.
 """
@@ -63,7 +63,9 @@ def resolve_data_config(
         # HWC tuple — drop channel dim
         raw = cfg["test_input_size"]
         input_size: Tuple[int, int] = (int(raw[0]), int(raw[1]))
-        crop_pct = float(cfg.get("test_crop_pct", cfg.get("crop_pct", DEFAULT_CROP_PCT)))
+        crop_pct = float(
+            cfg.get("test_crop_pct", cfg.get("crop_pct", DEFAULT_CROP_PCT))
+        )
     else:
         raw = cfg["input_size"]
         input_size = (int(raw[0]), int(raw[1]))
@@ -73,7 +75,7 @@ def resolve_data_config(
         input_size=input_size,
         interpolation=cfg.get("interpolation", "bicubic"),
         mean=tuple(cfg.get("mean", IMAGENET_DEFAULT_MEAN)),
-        std=tuple(cfg.get("std",  IMAGENET_DEFAULT_STD)),
+        std=tuple(cfg.get("std", IMAGENET_DEFAULT_STD)),
         crop_pct=crop_pct,
         crop_mode=cfg.get("crop_mode", DEFAULT_CROP_MODE),
     )
@@ -85,7 +87,7 @@ def create_transform(
     interpolation: str = "bicubic",
     mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
     std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
-    crop_pct:  Optional[float] = None,
+    crop_pct: Optional[float] = None,
     crop_mode: Optional[str] = None,
     # training-only kwargs, currently ignored
     scale: Optional[Tuple[float, float]] = None,
@@ -148,7 +150,7 @@ def create_transform(
             stacklevel=2,
         )
 
-    crop_pct = crop_pct  if crop_pct  is not None else DEFAULT_CROP_PCT
+    crop_pct = crop_pct if crop_pct is not None else DEFAULT_CROP_PCT
     crop_mode = crop_mode if crop_mode is not None else DEFAULT_CROP_MODE
 
     return ImagenetEvalTransform(

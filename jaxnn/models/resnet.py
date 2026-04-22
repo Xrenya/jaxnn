@@ -69,8 +69,7 @@ def get_norm_layer(norm_layer: LayerType) -> Type[nnx.Module]:
     if callable(norm_layer):
         return norm_layer
     raise TypeError(
-        f"norm_layer must be a string alias or a callable class, "
-        f"got {type(norm_layer)}"
+        f"norm_layer must be a string alias or a callable class, got {type(norm_layer)}"
     )
 
 
@@ -104,6 +103,7 @@ def wrap_norm_layer(
         A callable ``factory(num_features, *, rngs)`` that constructs the
         norm layer with the pre-bound dtype settings.
     """
+
     @functools.wraps(norm_cls)
     def factory(num_features: int, *, rngs: nnx.Rngs) -> nnx.Module:
         return norm_cls(
@@ -113,6 +113,7 @@ def wrap_norm_layer(
             promote_dtype=promote_dtype,
             rngs=rngs,
         )
+
     return factory
 
 
@@ -319,7 +320,12 @@ class BasicBlock(nnx.Module):
             promote_dtype=promote_dtype,
             preferred_element_type=preferred_element_type,
         )
-        _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
+        _norm = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )
 
         self.conv1 = nnx.Conv(
             in_features=inplanes,
@@ -433,7 +439,12 @@ class Bottleneck(nnx.Module):
             promote_dtype=promote_dtype,
             preferred_element_type=preferred_element_type,
         )
-        _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
+        _norm = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )
 
         self.conv1 = nnx.Conv(
             in_features=inplanes,
@@ -564,7 +575,12 @@ def downsample_avg(
     norm_layer = norm_layer or nnx.BatchNorm
     avg_stride: Tuple[int, int] = strides if dilation == (1, 1) else (1, 1)
     need_pool = avg_stride[0] > 1 or (dilation[0] > 1 and strides[0] > 1)
-    _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
+    _norm = wrap_norm_layer(
+        norm_layer,
+        dtype=norm_dtype,
+        param_dtype=norm_param_dtype,
+        promote_dtype=norm_promote_dtype,
+    )
 
     class AvgDownsample(nnx.Module):
         def __init__(self):
@@ -668,7 +684,9 @@ def make_blocks(
                 preferred_element_type=kwargs.get("preferred_element_type"),
                 norm_dtype=kwargs.get("norm_dtype", jnp.float32),
                 norm_param_dtype=kwargs.get("norm_param_dtype", jnp.float32),
-                norm_promote_dtype=kwargs.get("norm_promote_dtype", flax_dtypes.promote_dtype),
+                norm_promote_dtype=kwargs.get(
+                    "norm_promote_dtype", flax_dtypes.promote_dtype
+                ),
                 rngs=kwargs.get("rngs"),
             )
             downsample = (
@@ -752,7 +770,12 @@ def _build_stem(
         promote_dtype=promote_dtype,
         preferred_element_type=preferred_element_type,
     )
-    _norm = wrap_norm_layer(norm_layer, dtype=norm_dtype, param_dtype=norm_param_dtype, promote_dtype=norm_promote_dtype)
+    _norm = wrap_norm_layer(
+        norm_layer,
+        dtype=norm_dtype,
+        param_dtype=norm_param_dtype,
+        promote_dtype=norm_promote_dtype,
+    )
 
     if deep_stem:
         if "tiered" in stem_type:
@@ -836,7 +859,7 @@ class ResNet(nnx.Module):
       ``"deep_tiered"``   - variant t  (stem_width=32, widths 24-48-64, avg_down=True)
       ``"deep_tieredn"``  - variant tn (stem_width=32, widths 24-32-64, avg_down=True)
 
-    Dtype / precision knobs (applied uniformly to all ``nnx.Conv`` calls):
+    Dtype / precision knobs (applied uniformly to all ``nnx.Conv``, ``nnx.Linear`` calls):
 
       ``precision``
           XLA dot-product precision passed directly to ``nnx.Conv``.
@@ -1253,13 +1276,19 @@ default_cfgs = generate_default_cfgs(
         "resnet10t.c3_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet10t.c3_in1k",
-            input_size=(176, 176, 3), pool_size=(6, 6), test_crop_pct=0.95, test_input_size=(224, 224, 3),
+            input_size=(176, 176, 3),
+            pool_size=(6, 6),
+            test_crop_pct=0.95,
+            test_input_size=(224, 224, 3),
             first_conv="conv1.0",
         ),
         "resnet14t.c3_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet14t.c3_in1k",
-            input_size=(176, 176, 3), pool_size=(6, 6), test_crop_pct=0.95, test_input_size=(224, 224, 3),
+            input_size=(176, 176, 3),
+            pool_size=(6, 6),
+            test_crop_pct=0.95,
+            test_input_size=(224, 224, 3),
             first_conv="conv1.0",
         ),
         "resnet18.a1_in1k": _rcfg(
@@ -1277,12 +1306,14 @@ default_cfgs = generate_default_cfgs(
         "resnet18.fb_ssl_yfcc100m_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.fb_ssl_yfcc100m_ft_in1k",
-            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models'
+            license="cc-by-nc-4.0",
+            origin_url="https://github.com/facebookresearch/semi-supervised-ImageNet1K-models",
         ),
         "resnet18.fb_swsl_ig1b_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.fb_swsl_ig1b_ft_in1k",
-            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models'
+            license="cc-by-nc-4.0",
+            origin_url="https://github.com/facebookresearch/semi-supervised-ImageNet1K-models",
         ),
         "resnet18.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1291,12 +1322,16 @@ default_cfgs = generate_default_cfgs(
         "resnet18.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/resnet18.tv_in1k",
-            license='bsd-3-clause', origin_url='https://github.com/pytorch/vision'
+            license="bsd-3-clause",
+            origin_url="https://github.com/pytorch/vision",
         ),
         "resnet18d.ra4_e3600_r224_in1k": _ra4cfg(
             hf_hub_id="JaxNN/",
             url="JaxNN/ra4_e3600_r224_in1k.tv_in1k",
-            mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), crop_pct=0.9, first_conv='conv1.0'
+            mean=(0.5, 0.5, 0.5),
+            std=(0.5, 0.5, 0.5),
+            crop_pct=0.9,
+            first_conv="conv1.0",
         ),
         "resnet18d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
@@ -1327,7 +1362,8 @@ default_cfgs = generate_default_cfgs(
         "resnet34.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.tv_in1k",
-            license='bsd-3-clause', origin_url='https://github.com/pytorch/vision',
+            license="bsd-3-clause",
+            origin_url="https://github.com/pytorch/vision",
         ),
         "resnet34d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
@@ -1337,7 +1373,9 @@ default_cfgs = generate_default_cfgs(
         "resnet34.ra4_e3600_r224_in1k": _ra4cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet34.ra4_e3600_r224_in1k",
-            mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), crop_pct=0.9,
+            mean=(0.5, 0.5, 0.5),
+            std=(0.5, 0.5, 0.5),
+            crop_pct=0.9,
         ),
         # ResNet (Bottleneck)
         "resnet26.bt_in1k": _ttcfg(
@@ -1352,8 +1390,12 @@ default_cfgs = generate_default_cfgs(
         "resnet26t.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet26t.ra2_in1k",
-            first_conv='conv1.0', input_size=(256, 256, 3), pool_size=(8, 8),
-            crop_pct=0.94, test_input_size=(320, 320, 3), test_crop_pct=1.0,
+            first_conv="conv1.0",
+            input_size=(256, 256, 3),
+            pool_size=(8, 8),
+            crop_pct=0.94,
+            test_input_size=(320, 320, 3),
+            test_crop_pct=1.0,
         ),
         "resnet50.a1_in1k": _rcfg(
             hf_hub_id="JaxNN/",
@@ -1361,7 +1403,11 @@ default_cfgs = generate_default_cfgs(
         ),
         "resnet50.a1h_in1k": _rcfg(
             hf_hub_id="JaxNN/",
-            input_size=(176, 176, 3), pool_size=(6, 6), crop_pct=0.9, test_input_size=(224, 224, 3), test_crop_pct=1.0
+            input_size=(176, 176, 3),
+            pool_size=(6, 6),
+            crop_pct=0.9,
+            test_input_size=(224, 224, 3),
+            test_crop_pct=1.0,
         ),
         "resnet50.a2_in1k": _rcfg(
             hf_hub_id="JaxNN/",
@@ -1410,11 +1456,13 @@ default_cfgs = generate_default_cfgs(
         "resnet50.fb_ssl_yfcc100m_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.fb_ssl_yfcc100m_ft_in1k",
-            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models',
+            license="cc-by-nc-4.0",
+            origin_url="https://github.com/facebookresearch/semi-supervised-ImageNet1K-models",
         ),
         "resnet50.fb_swsl_ig1b_ft_in1k": _cfg(
             hf_hub_id="JaxNN/",
-            license='cc-by-nc-4.0', origin_url='https://github.com/facebookresearch/semi-supervised-ImageNet1K-models'
+            license="cc-by-nc-4.0",
+            origin_url="https://github.com/facebookresearch/semi-supervised-ImageNet1K-models",
         ),
         "resnet50.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1423,7 +1471,8 @@ default_cfgs = generate_default_cfgs(
         "resnet50.tv_in1k": _cfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet50.tv_in1k",
-            license='bsd-3-clause', origin_url='https://github.com/pytorch/vision'
+            license="bsd-3-clause",
+            origin_url="https://github.com/pytorch/vision",
         ),
         "resnet50.tv2_in1k": _cfg(
             hf_hub_id="JaxNN/",
@@ -1461,9 +1510,13 @@ default_cfgs = generate_default_cfgs(
             url="https://huggingface.co/JaxNN/resnet50d.ra2_in1k",
         ),
         "resnet50d.ra4_e3600_r224_in1k": _ra4cfg(
-            hf_hub_id="JaxNN/", first_conv="conv1.0",
-            mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
-            crop_pct=0.95, test_input_size=(288, 288, 3), test_crop_pct=1.0,
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            mean=(0.5, 0.5, 0.5),
+            std=(0.5, 0.5, 0.5),
+            crop_pct=0.95,
+            test_input_size=(288, 288, 3),
+            test_crop_pct=1.0,
         ),
         "resnet50s.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1525,8 +1578,12 @@ default_cfgs = generate_default_cfgs(
         "resnet101d.ra2_in1k": _ttcfg(
             hf_hub_id="JaxNN/",
             url="https://huggingface.co/JaxNN/resnet101d.ra2_in1k",
-            first_conv="conv1.0", input_size=(256, 256, 3), pool_size=(8, 8), crop_pct=0.95,
-            test_crop_pct=1.0, test_input_size=(320, 320, 3)
+            first_conv="conv1.0",
+            input_size=(256, 256, 3),
+            pool_size=(8, 8),
+            crop_pct=0.95,
+            test_crop_pct=1.0,
+            test_input_size=(320, 320, 3),
         ),
         "resnet101s.gluon_in1k": _gcfg(
             hf_hub_id="JaxNN/",
@@ -1595,9 +1652,13 @@ default_cfgs = generate_default_cfgs(
         ),
         "resnet200.untrained": _ttcfg(),
         "resnet200d.ra2_in1k": _ttcfg(
-            hf_hub_id="JaxNN/", first_conv="conv1.0",
-            input_size=(256, 256, 3), pool_size=(8, 8), crop_pct=0.95,
-            test_crop_pct=1.0, test_input_size=(320, 320, 3)
+            hf_hub_id="JaxNN/",
+            first_conv="conv1.0",
+            input_size=(256, 256, 3),
+            pool_size=(8, 8),
+            crop_pct=0.95,
+            test_crop_pct=1.0,
+            test_input_size=(320, 320, 3),
         ),
         # Wide ResNet
         "wide_resnet50_2.racm_in1k": _ttcfg(hf_hub_id="JaxNN/"),

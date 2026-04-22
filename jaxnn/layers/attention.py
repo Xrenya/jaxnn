@@ -11,7 +11,9 @@ from .identity import Identity
 
 _logger = logging.getLogger(__name__)
 
-__all__ = ['Attention'] #, 'AttentionRope', 'maybe_add_mask', 'resolve_self_attn_mask']
+__all__ = [
+    "Attention"
+]  # , 'AttentionRope', 'maybe_add_mask', 'resolve_self_attn_mask']
 
 
 def attention_to_mha(attn: "Attention") -> nnx.MultiHeadAttention:
@@ -36,21 +38,21 @@ def attention_to_mha(attn: "Attention") -> nnx.MultiHeadAttention:
         param_dtype=attn.qkv.kernel.value.dtype,
         precision=attn.dtype_kwargs.get("precision", None),
         kernel_init=nnx.initializers.zeros,
-        rngs=attn.rngs
+        rngs=attn.rngs,
     )
 
     w_qkv = attn.qkv.kernel[...]
     wq, wk, wv = jnp.split(w_qkv, 3, axis=-1)
 
     mha.query.kernel[...] = wq.reshape(dim, num_heads, head_dim)
-    mha.key.kernel[...]   = wk.reshape(dim, num_heads, head_dim)
+    mha.key.kernel[...] = wk.reshape(dim, num_heads, head_dim)
     mha.value.kernel[...] = wv.reshape(dim, num_heads, head_dim)
 
     if attn.qkv.bias is not None:
         b_qkv = attn.qkv.bias[...]
         bq, bk, bv = jnp.split(b_qkv, 3, axis=0)
         mha.query.bias[...] = bq.reshape(num_heads, head_dim)
-        mha.key.bias[...]   = bk.reshape(num_heads, head_dim)
+        mha.key.bias[...] = bk.reshape(num_heads, head_dim)
         mha.value.bias[...] = bv.reshape(num_heads, head_dim)
 
     mha.out.kernel[...] = attn.proj.kernel[...].reshape(num_heads, head_dim, -1)
@@ -58,7 +60,8 @@ def attention_to_mha(attn: "Attention") -> nnx.MultiHeadAttention:
         mha.out.bias[...] = attn.proj.bias[...]
 
     return mha
-    
+
+
 def mha_to_attention(
     mha: nnx.MultiHeadAttention,
     qk_norm: bool = False,
@@ -86,7 +89,7 @@ def mha_to_attention(
         proj_bias=(mha.out.bias is not None),
         norm_layer=norm_layer,
         rngs=mha.rngs,
-        **kwargs
+        **kwargs,
     )
 
     attn_dim = num_heads * head_dim
@@ -116,6 +119,7 @@ class Attention(nnx.Module):
     efficiency when available, and a manual implementation otherwise. The module includes
     options for QK normalization, attention dropout, and projection dropout.
     """
+
     def __init__(
         self,
         dim: int,
@@ -126,8 +130,8 @@ class Attention(nnx.Module):
         qk_norm: bool = False,
         scale_norm: bool = False,
         proj_bias: bool = True,
-        attn_drop: float = 0.,
-        proj_drop: float = 0.,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
         norm_layer: Optional[Type[nnx.Module]] = None,
         dtype: Optional[Dtype] = None,
         param_dtype: Dtype = jnp.float32,
@@ -135,7 +139,7 @@ class Attention(nnx.Module):
         promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         preferred_element_type: Optional[Dtype] = None,
         *,
-        rngs: nnx.Rngs
+        rngs: nnx.Rngs,
     ):
         """Initialize the Attention module.
 
@@ -186,12 +190,14 @@ class Attention(nnx.Module):
             assert dim % num_heads == 0, "dim should be divisible by num_heads"
             head_dim = dim // num_heads
         if qk_norm or scale_norm:
-            assert norm_layer is not None, "norm_layer must be provided if qk_norm or scale_norm is True"
+            assert norm_layer is not None, (
+                "norm_layer must be provided if qk_norm or scale_norm is True"
+            )
 
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.attn_dim = num_heads * head_dim
-        
+
         self.qk_norm = qk_norm
         self.scale_norm = scale_norm
 
@@ -226,7 +232,7 @@ class Attention(nnx.Module):
         self.proj_drop = nnx.Dropout(proj_drop, rngs=rngs)
 
         self.rngs = rngs
-    
+
     def to_nnx_mha(self) -> nnx.MultiHeadAttention:
         """Convert to standard nnx.MultiHeadAttention (loses extra features)."""
         if self.qk_norm or self.scale_norm:
@@ -235,14 +241,13 @@ class Attention(nnx.Module):
 
     @classmethod
     def from_nnx_mha(
-        cls, 
+        cls,
         mha: nnx.MultiHeadAttention,
         qk_norm: bool = False,
         scale_norm: bool = False,
-        **kwargs
+        **kwargs,
     ) -> "Attention":
-        """Create from nnx.MultiHeadAttention with optional extra features
-        """
+        """Create from nnx.MultiHeadAttention with optional extra features"""
         return mha_to_attention(mha, qk_norm=qk_norm, scale_norm=scale_norm, **kwargs)
 
     def __call__(
@@ -276,7 +281,9 @@ class Attention(nnx.Module):
             is_causal=is_causal,
             dtype=self.dtype_kwargs.get("dtype", None),
             precision=self.dtype_kwargs.get("precision", None),
-            promote_dtype=self.dtype_kwargs.get("promote_dtype", flax_dtypes.promote_dtype),
+            promote_dtype=self.dtype_kwargs.get(
+                "promote_dtype", flax_dtypes.promote_dtype
+            ),
         )
         # (B, num_heads, N, head_dim) -> (B, N, attn_dim)
         x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
@@ -285,4 +292,3 @@ class Attention(nnx.Module):
         x = self.proj(x)
         x = self.proj_drop(x, deterministic=deterministic)
         return x
-        

@@ -152,15 +152,25 @@ class ImagenetEvalTransform:
             if self._square and crop_pct != 1.0:
                 # Standard path: shorter-edge resize, then center crop
                 resize = Resize(self.scale_h, interpolation=tv_interp, antialias=True)
-                self._spatial = Compose([resize, CenterCrop((self.crop_h, self.crop_w))])
+                self._spatial = Compose(
+                    [resize, CenterCrop((self.crop_h, self.crop_w))]
+                )
             elif crop_pct == 1.0:
                 # crop_pct=1.0: scale_size == crop_size, so Resize directly to target.
                 # No crop needed — timm does a direct fixed-size resize (both axes),
                 # equivalent to squash but via the center path.
-                self._spatial = Resize((self.crop_h, self.crop_w), interpolation=tv_interp, antialias=True)
+                self._spatial = Resize(
+                    (self.crop_h, self.crop_w), interpolation=tv_interp, antialias=True
+                )
             else:
-                resize = Resize((self.scale_h, self.scale_w), interpolation=tv_interp, antialias=True)
-                self._spatial = Compose([resize, CenterCrop((self.crop_h, self.crop_w))])
+                resize = Resize(
+                    (self.scale_h, self.scale_w),
+                    interpolation=tv_interp,
+                    antialias=True,
+                )
+                self._spatial = Compose(
+                    [resize, CenterCrop((self.crop_h, self.crop_w))]
+                )
 
     def __call__(self, img: Union[Image.Image, np.ndarray]) -> np.ndarray:
         """Apply eval transform.
