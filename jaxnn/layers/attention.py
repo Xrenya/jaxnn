@@ -8,7 +8,8 @@ from flax.typing import Dtype, PromoteDtypeFn, PrecisionLike
 from flax.nnx.nn import dtypes as flax_dtypes
 
 from .identity import Identity
-from .pos_embed_sincon import apply_rot_embed_cat
+from .pos_embed_sincos import apply_rot_embed_cat
+from .helpers import wrap_norm_layer
 
 _logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ __all__ = ["Attention", "AttentionRope", "maybe_add_mask", "resolve_self_attn_ma
 
 
 def maybe_add_mask(score: jax.Array, attn_mask: Optional[jax.Array] = None):
+    """Add attention mask to attention scores."""
     return score if attn_mask is None else score + attn_mask
 
 
@@ -29,13 +31,13 @@ def resolve_self_attn_mask(
     is_causal and attn_mask are mutually exclusive (is_causal takes precedence).
     """
     if is_causal:
-        # upper-triangular filled with -inf, diagonal = 0 (same as triu_(1))
-        attn_bias = jnp.full((seq_len, seq_len), float("-inf"))
+        # upper-triangular filled with -inf, diagonal = 0
+        attn_bias = jnp.full((seq_len, seq_len), float("-inf"), dtype=attn.dtype)
         attn_bias = jnp.triu(attn_bias, k=1)
     elif attn_mask is None:
         attn_bias = None
     elif attn_mask.dtype == jnp.bool_:
-        # bool mask: True = keep, False = mask out (same as masked_fill_(~mask, -inf))
+        # bool mask: True = keep, False = mask out
         attn_bias = jnp.where(
             attn_mask, jnp.zeros_like(attn_mask, dtype=attn.dtype), float("-inf")
         )
@@ -72,19 +74,21 @@ def attention_to_mha(attn: "Attention") -> nnx.MultiHeadAttention:
     w_qkv = attn.qkv.kernel[...]
     wq, wk, wv = jnp.split(w_qkv, 3, axis=-1)
 
+    # JAX/NNX: (in_features, num_heads, head_dim)
     mha.query.kernel[...] = wq.reshape(dim, num_heads, head_dim)
     mha.key.kernel[...] = wk.reshape(dim, num_heads, head_dim)
     mha.value.kernel[...] = wv.reshape(dim, num_heads, head_dim)
 
-    if attn.qkv.bias is not None:
+    if attn.qkv.use_bias:
         b_qkv = attn.qkv.bias[...]
         bq, bk, bv = jnp.split(b_qkv, 3, axis=0)
         mha.query.bias[...] = bq.reshape(num_heads, head_dim)
         mha.key.bias[...] = bk.reshape(num_heads, head_dim)
         mha.value.bias[...] = bv.reshape(num_heads, head_dim)
 
+    # JAX/NNX: (num_heads, head_dim, out_features)
     mha.out.kernel[...] = attn.proj.kernel[...].reshape(num_heads, head_dim, -1)
-    if attn.proj.bias is not None:
+    if attn.proj.use_bias:
         mha.out.bias[...] = attn.proj.bias[...]
 
     return mha
@@ -102,9 +106,9 @@ def mha_to_attention(
     Fuses the separate Q/K/V projections into a single QKV linear layer.
     Pass qk_norm/scale_norm and a norm_layer to add those features on top.
     """
-    # nnx stores query kernel as (in_features, num_heads, head_dim)
+    # NNX stores query kernel as (in_features, num_heads, head_dim)
     in_features, num_heads, head_dim = mha.query.kernel.value[...].shape
-    out_features = mha.out.kernel.value[...].shape[-1]  # (num_heads, head_dim, out)
+    out_features = mha.out.kernel.value[...].shape[-1]
     has_bias = mha.query.bias is not None
 
     attn = Attention(
@@ -166,6 +170,9 @@ class Attention(nnx.Module):
         precision: PrecisionLike = None,
         promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         fused_attn: bool = True,
         *,
         rngs: nnx.Rngs,
@@ -184,34 +191,16 @@ class Attention(nnx.Module):
             attn_drop: Dropout rate applied to the attention weights.
             proj_drop: Dropout rate applied after the output projection.
             norm_layer: Normalization layer constructor for QK normalization if enabled.
-
-            ``precision``
-                XLA dot-product precision passed directly to ``nnx.Conv``.
-                Accepts ``jax.lax.Precision`` enum values, string shortcuts
-                (``"highest"``, ``"high"``, ``"default"``), or a 2-tuple for
-                asymmetric LHS/RHS precision.  ``None`` (default) lets XLA
-                choose, which is typically ``"default"`` precision.  On TPUs,
-                ``"default"`` maps to bfloat16 matrix units; use
-                ``"highest"`` for full float32 accumulation when numerical
-                fidelity matters more than throughput.
-                (`float32`, `tensorfloat32`, `bfloat16`)
-                for ref: https://kolonist26-jax-kr.readthedocs.io/en/latest/jax.lax.html
-
-            ``promote_dtype``
-                A callable ``(inputs, kernel, bias, *, dtype) -> (inputs, kernel, bias)``
-                that casts operands before the convolution.  The default
-                (``flax.nnx.nn.dtypes.promote_dtype``) promotes all operands
-                to a common dtype derived from the inputs.  Pass a custom
-                function to implement mixed-precision strategies, e.g. keeping
-                weights in ``float32`` while inputs are ``bfloat16``.
-
-            ``preferred_element_type``
-                Passed to ``jax.lax.conv_general_dilated`` as
-                ``preferred_element_type``.  Controls the *output* accumulation
-                dtype of the dot product independently of the operand dtypes,
-                e.g. ``jnp.float32`` with ``bfloat16`` weights to accumulate
-                in higher precision.  ``None`` (default) lets JAX infer this
-                from the operand types.
+            dtype: The dtype of the computation.
+            param_dtype: The dtype of the parameters.
+            precision: XLA dot-product precision.
+            promote_dtype: Function to promote dtypes before operations.
+            preferred_element_type: Output accumulation dtype for dot products.
+            norm_dtype: Dtype for normalization layers.
+            norm_param_dtype: Param dtype for normalization layers.
+            norm_promote_dtype: Promote dtype function for normalization.
+            fused_attn: Use fused attention implementation.
+            rngs: NNX RNGs for random operations.
         """
         dim_out = dim_out or dim
         head_dim = attn_head_dim
@@ -226,11 +215,12 @@ class Attention(nnx.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.attn_dim = num_heads * head_dim
+        self.scale = head_dim**-0.5  # Added missing scale
 
         self.qk_norm = qk_norm
         self.scale_norm = scale_norm
 
-        # Common conv kwargs for dtype/precision control
+        # Common kwargs for dtype/precision control
         dtype_kwargs = dict(
             dtype=dtype,
             param_dtype=param_dtype,
@@ -247,10 +237,28 @@ class Attention(nnx.Module):
             rngs=rngs,
             **dtype_kwargs,
         )
-        self.q_norm = norm_layer(head_dim) if qk_norm else Identity()
-        self.k_norm = norm_layer(head_dim) if qk_norm else Identity()
+        self.q_norm = (
+            wrap_norm_layer(
+                norm_layer,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=head_dim, rngs=rngs)
+            if qk_norm
+            else Identity()
+        )
+        self.k_norm = (
+            wrap_norm_layer(
+                norm_layer,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=head_dim, rngs=rngs)
+            if qk_norm
+            else Identity()
+        )
         self.attn_drop = nnx.Dropout(attn_drop, rngs=rngs)
-        self.norm = norm_layer(self.attn_dim) if scale_norm else Identity()
+        self.norm = norm_layer(self.attn_dim, rngs=rngs) if scale_norm else Identity()
         self.proj = nnx.Linear(
             in_features=self.attn_dim,
             out_features=dim_out,
@@ -282,7 +290,7 @@ class Attention(nnx.Module):
     def __call__(
         self,
         x: jax.Array,
-        attn_mask: jax.Array | None = None,
+        attn_mask: Optional[jax.Array] = None,
         is_causal: bool = False,
         deterministic: bool = False,
     ):
@@ -317,12 +325,12 @@ class Attention(nnx.Module):
             )
         else:
             q = q * self.scale
-            attn = q @ k.transpose(0, 2, 1)
+            attn = jnp.einsum("bhnd,bhmd->bhnm", q, k)  # JAX-style matmul
             attn_bias = resolve_self_attn_mask(N, attn, attn_mask, is_causal)
             attn = maybe_add_mask(attn, attn_bias)
             attn = jax.nn.softmax(attn, axis=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
+            attn = self.attn_drop(attn, deterministic=deterministic)
+            x = jnp.einsum("bhnm,bhmd->bhnd", attn, v)
         # (B, num_heads, N, head_dim) -> (B, N, attn_dim)
         x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
 
@@ -363,10 +371,13 @@ class AttentionRope(nnx.Module):
         precision: PrecisionLike = None,
         promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
         *,
         rngs: nnx.Rngs,
     ):
-        """Initialize the Attention module.
+        """Initialize the AttentionRope module.
 
         Args:
             dim: Input dimension of the token embeddings
@@ -384,36 +395,18 @@ class AttentionRope(nnx.Module):
             scale_norm: Enable normalization (scaling) of attention output with norm_layer
             proj_bias: Whether to use bias in the output projection
             rotate_half: Use 'half' ROPE layout instead of default 'interleaved'
-
-            ``precision``
-                XLA dot-product precision passed directly to ``nnx.Conv``.
-                Accepts ``jax.lax.Precision`` enum values, string shortcuts
-                (``"highest"``, ``"high"``, ``"default"``), or a 2-tuple for
-                asymmetric LHS/RHS precision.  ``None`` (default) lets XLA
-                choose, which is typically ``"default"`` precision.  On TPUs,
-                ``"default"`` maps to bfloat16 matrix units; use
-                ``"highest"`` for full float32 accumulation when numerical
-                fidelity matters more than throughput.
-                (`float32`, `tensorfloat32`, `bfloat16`)
-                for ref: https://kolonist26-jax-kr.readthedocs.io/en/latest/jax.lax.html
-
-            ``promote_dtype``
-                A callable ``(inputs, kernel, bias, *, dtype) -> (inputs, kernel, bias)``
-                that casts operands before the convolution.  The default
-                (``flax.nnx.nn.dtypes.promote_dtype``) promotes all operands
-                to a common dtype derived from the inputs.  Pass a custom
-                function to implement mixed-precision strategies, e.g. keeping
-                weights in ``float32`` while inputs are ``bfloat16``.
-
-            ``preferred_element_type``
-                Passed to ``jax.lax.conv_general_dilated`` as
-                ``preferred_element_type``.  Controls the *output* accumulation
-                dtype of the dot product independently of the operand dtypes,
-                e.g. ``jnp.float32`` with ``bfloat16`` weights to accumulate
-                in higher precision.  ``None`` (default) lets JAX infer this
-                from the operand types.
+            fused_attn: Use fused attention implementation.
+            dtype: The dtype of the computation.
+            param_dtype: The dtype of the parameters.
+            precision: XLA dot-product precision.
+            promote_dtype: Function to promote dtypes before operations.
+            preferred_element_type: Output accumulation dtype for dot products.
+            norm_dtype: Dtype for normalization layers.
+            norm_param_dtype: Param dtype for normalization layers.
+            norm_promote_dtype: Promote dtype function for normalization.
+            rngs: NNX RNGs for random operations.
         """
-        # Common conv kwargs for dtype/precision control
+        # Common kwargs for dtype/precision control
         dtype_kwargs = dict(
             dtype=dtype,
             param_dtype=param_dtype,
@@ -422,6 +415,13 @@ class AttentionRope(nnx.Module):
             preferred_element_type=preferred_element_type,
         )
         self.dtype_kwargs = dtype_kwargs
+
+        dtype_norm_kwargs = dict(
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )
+        self.dtype_norm_kwargs = dtype_norm_kwargs
 
         dim_out = dim_out or dim
         head_dim = attn_head_dim
@@ -444,7 +444,7 @@ class AttentionRope(nnx.Module):
         if qkv_fused:
             self.qkv = nnx.Linear(
                 in_features=dim,
-                out_features=self.head_dim * 3,
+                out_features=self.attn_dim * 3,
                 use_bias=qkv_bias,
                 rngs=rngs,
                 **dtype_kwargs,
@@ -455,37 +455,65 @@ class AttentionRope(nnx.Module):
             self.q_proj = nnx.Linear(
                 in_features=dim,
                 out_features=self.attn_dim,
-                bias=qkv_bias,
+                use_bias=qkv_bias,
                 rngs=rngs,
                 **dtype_kwargs,
             )
             self.k_proj = nnx.Linear(
                 in_features=dim,
                 out_features=self.attn_dim,
-                bias=qkv_bias,
+                use_bias=qkv_bias,
                 rngs=rngs,
                 **dtype_kwargs,
             )
             self.v_proj = nnx.Linear(
                 in_features=dim,
                 out_features=self.attn_dim,
-                bias=qkv_bias,
+                use_bias=qkv_bias,
                 rngs=rngs,
                 **dtype_kwargs,
             )
 
-        self.q_norm = norm_layer(head_dim) if qk_norm else Identity()
-        self.k_norm = norm_layer(head_dim) if qk_norm else Identity()
-        self.attn_drop = nnx.Dropout(rate=attn_drop)
-        self.norm = norm_layer(self.attn_dim) if scale_norm else Identity()
+        # NNX norm layers need rngs
+        self.q_norm = (
+            wrap_norm_layer(
+                norm_layer,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=head_dim, rngs=rngs)
+            if qk_norm
+            else Identity()
+        )
+        self.k_norm = (
+            wrap_norm_layer(
+                norm_layer,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=head_dim, rngs=rngs)
+            if qk_norm
+            else Identity()
+        )
+        self.attn_drop = nnx.Dropout(rate=attn_drop, rngs=rngs)
+        self.norm = (
+            wrap_norm_layer(
+                norm_layer,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=self.attn_dim, rngs=rngs)
+            if scale_norm
+            else Identity()
+        )
         self.proj = nnx.Linear(
             in_features=self.attn_dim,
             out_features=dim_out,
-            bias=proj_bias,
+            use_bias=proj_bias,
             rngs=rngs,
             **dtype_kwargs,
         )
-        self.proj_drop = nnx.Dropout(rate=proj_drop)
+        self.proj_drop = nnx.Dropout(rate=proj_drop, rngs=rngs)
 
         self.qkv_fused = qkv_fused
         self.rngs = rngs
@@ -505,6 +533,7 @@ class AttentionRope(nnx.Module):
             rope: Rotary position embeddings tensor for position-aware attention
             attn_mask: Optional attention mask to apply during attention computation
             is_causal: If True, use causal (autoregressive) masking
+            deterministic: If True, disable dropout
 
         Returns:
             Tensor of shape (batch_size, sequence_length, dim_out)
@@ -515,31 +544,30 @@ class AttentionRope(nnx.Module):
             qkv = (
                 self.qkv(x)
                 .reshape(B, N, 3, self.num_heads, self.head_dim)
-                .tranpose(2, 0, 3, 1, 4)
+                .transpose(2, 0, 3, 1, 4)
             )
             q, k, v = qkv  # each: (B, num_heads, N, head_dim)
-            q, k = self.q_norm(q), self.k_norm(k)
         else:
             q = (
                 self.q_proj(x)
                 .reshape(B, N, self.num_heads, self.head_dim)
-                .tranpose(0, 2, 1, 3)
+                .transpose(0, 2, 1, 3)
             )
             k = (
                 self.k_proj(x)
                 .reshape(B, N, self.num_heads, self.head_dim)
-                .tranpose(0, 2, 1, 3)
+                .transpose(0, 2, 1, 3)
             )
             v = (
                 self.v_proj(x)
                 .reshape(B, N, self.num_heads, self.head_dim)
-                .tranpose(0, 2, 1, 3)
+                .transpose(0, 2, 1, 3)
             )
 
         q, k = self.q_norm(q), self.k_norm(k)
 
         if rope is not None:
-            npt = self.num_heads
+            npt = self.num_prefix_tokens
             half = getattr(self, "rotate_half", False)
             q = jnp.concatenate(
                 [
@@ -578,12 +606,12 @@ class AttentionRope(nnx.Module):
             )
         else:
             q = q * self.scale
-            attn = q @ k.transpose(0, 2, 1)
+            attn = jnp.einsum("bhnd,bhmd->bhnm", q, k)  # JAX-style matmul
             attn_bias = resolve_self_attn_mask(N, attn, attn_mask, is_causal)
             attn = maybe_add_mask(attn, attn_bias)
             attn = jax.nn.softmax(attn, axis=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
+            attn = self.attn_drop(attn, deterministic=deterministic)
+            x = jnp.einsum("bhnm,bhmd->bhnd", attn, v)
         # (B, num_heads, N, head_dim) -> (B, N, attn_dim)
         x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
 

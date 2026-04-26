@@ -31,6 +31,7 @@ dependencies = [
     "huggingface-hub>=1.4.1",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
+    "einops>=0.8.2",
 ]
 
 [project.optional-dependencies]
