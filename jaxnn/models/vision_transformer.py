@@ -49,6 +49,8 @@ from jaxnn.layers import (
     PatchEmbed,
     Mlp,
     PatchDropout,
+    LayerScale,
+    DropPath,
     # SwiGLUPacked,
     # SwiGLU,
     # LayerNorm,
@@ -56,7 +58,7 @@ from jaxnn.layers import (
     calculate_drop_path_rates,
     get_norm_layer,
     get_act_layer,
-    wrap_norm_layer,
+    wrap_norm_layer
 )
 
 from jaxnn.models._registry import register_model, generate_default_cfgs
@@ -171,24 +173,28 @@ class VisionTransformer(nnx.Module):
         use_fc_norm = (
             global_pool in ("avg", "avgmax", "max") if fc_norm is None else fc_norm
         )
-
-        norm_layer = wrap_norm_layer(
-            get_norm_layer(norm_layer),
-            dtype=norm_dtype,
-            param_dtype=norm_param_dtype,
-            promote_dtype=norm_promote_dtype,
-        )(num_features=embed_dim, rngs=rngs) or wrap_norm_layer(
-            nnx.LayerNorm,
-            dtype=norm_dtype,
-            param_dtype=norm_param_dtype,
-            promote_dtype=norm_promote_dtype,
-        )(num_features=embed_dim, rngs=rngs, epsilon=1e-6)
+        
+        norm_layer = (
+            wrap_norm_layer(
+                get_norm_layer(norm_layer),
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=embed_dim, rngs=rngs)
+            or 
+            wrap_norm_layer(
+                nnx.LayerNorm,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=embed_dim, rngs=rngs, epsilon=1e-6)
+        )
         embed_norm_layer = wrap_norm_layer(
-            get_norm_layer(embed_norm_layer),
-            dtype=norm_dtype,
-            param_dtype=norm_param_dtype,
-            promote_dtype=norm_promote_dtype,
-        )(num_features=embed_dim, rngs=rngs)
+                get_norm_layer(embed_norm_layer),
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=embed_dim, rngs=rngs)
         act_layer = get_act_layer(act_layer) or nnx.gelu
 
         # Config
@@ -338,6 +344,8 @@ class Block(nnx.Module):
     ):
         """Initialize Block.
 
+        Pre-Norm Residual Connections
+
         Args:
             dim: Number of input channels.
             num_heads: Number of attention heads.
@@ -355,6 +363,7 @@ class Block(nnx.Module):
             attn_layer: Attention layer type (class or string).
             depth: Block index, passed to attention layer for depth-dependent init.
         """
+        self.init_values = init_values
         self.norm1 = wrap_norm_layer(
             norm_layer,
             dtype=norm_dtype,
@@ -380,6 +389,171 @@ class Block(nnx.Module):
             depth=depth,
             rngs=rngs,
         )
+        self.ls1 = LayerScale(
+            dim=dim,
+            init_values=init_values,
+            param_dtype=norm_param_dtype,
+            dtype=norm_dtype,
+            rngs=rngs
+        )
+        self.drop_path1 = DropPath(drop_path, rngs=rngs) if drop_path > 0. else Identity()
+        
+        self.norm2 = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )(num_features=dim, rngs=rngs)
+
+        self.mlp = mlp_layer(
+            in_features=dim,
+            hidden_features=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            bias=proj_bias,
+            drop=proj_drop,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
+            rngs=rngs,
+        )
+
+        self.ls2 = LayerScale(
+            dim=dim,
+            init_values=init_values,
+            param_dtype=norm_param_dtype,
+            dtype=norm_dtype,
+            rngs=rngs
+        ) if init_values else Identity()
+        self.drop_path2 = DropPath(rate=drop_path, rngs=rngs) if drop_path > 0. else Identity()
+
+    def __call__(
+        self,
+        x: jax.Array,
+        attn_mask: Optional[jax.Array] = None,
+        is_causal: bool = False,
+    ) -> jax.Array:
+        x = x + self.drop_path1(self.ls1(self.attn(
+            self.norm1(x), attn_mask=attn_mask, is_causal=is_causal
+        )))
+        x = x = self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        return x
+
+class ResPostBlock(nnx.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        scale_attn_norm: bool = False,
+        scale_mlp_norm: bool = False,
+        proj_bias: bool = True,
+        proj_drop: float = 0.0,
+        attn_drop: float = 0.0,
+        init_values: Optional[float] = None,
+        drop_path: float = 0.0,
+        act_layer: Callable = nnx.gelu,
+        norm_layer: Callable = partial(nnx.LayerNorm, epsilon=1e-6),
+        mlp_layer: Type[nnx.Module] = Mlp,
+        attn_layer: Type[nnx.Module] = Attention,
+        depth: int = 0,
+        dtype: Optional[Dtype] = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike = None,
+        promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        preferred_element_type: Optional[Dtype] = None,
+        norm_dtype: Optional[Dtype] = jnp.float32,
+        norm_param_dtype: Dtype = jnp.float32,
+        norm_promote_dtype: PromoteDtypeFn = flax_dtypes.promote_dtype,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        """Initialize Block.
+
+        Support for adapter tuning
+        Residual Post-Norm
+
+        Args:
+            dim: Number of input channels.
+            num_heads: Number of attention heads.
+            mlp_ratio: Ratio of mlp hidden dim to embedding dim.
+            qkv_bias: If True, add a learnable bias to query, key, value.
+            qk_norm: If True, apply normalization to query and key.
+            proj_bias: If True, add bias to output projection.
+            proj_drop: Projection dropout rate.
+            attn_drop: Attention dropout rate.
+            init_values: Initial values for layer scale.
+            drop_path: Stochastic depth rate.
+            act_layer: Activation layer.
+            norm_layer: Normalization layer.
+            mlp_layer: MLP layer.
+            attn_layer: Attention layer type (class or string).
+            depth: Block index, passed to attention layer for depth-dependent init.
+        """
+        self.init_values = init_values
+        self.attn = _create_attn(
+            attn_layer=attn_layer,
+            dim=dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_norm=qk_norm,
+            scale_norm=scale_attn_norm,
+            proj_bias=proj_bias,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            norm_layer=norm_layer,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
+            depth=depth,
+            rngs=rngs,
+        )
+        self.norm1 = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )(num_features=dim, rngs=rngs)
+        self.drop_path1 = DropPath(drop_path, rngs=rngs) if drop_path > 0. else Identity()
+        
+        self.mlp = mlp_layer(
+            in_features=dim,
+            hidden_features=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            bias=proj_bias,
+            drop=proj_drop,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            promote_dtype=promote_dtype,
+            preferred_element_type=preferred_element_type,
+            rngs=rngs,
+        )
+        self.norm2 = wrap_norm_layer(
+            norm_layer,
+            dtype=norm_dtype,
+            param_dtype=norm_param_dtype,
+            promote_dtype=norm_promote_dtype,
+        )(num_features=dim, rngs=rngs)
+        self.drop_path2 = DropPath(rate=drop_path, rngs=rngs) if drop_path > 0. else Identity()
+
+
+    def __call__(
+        self,
+        x: jax.Array,
+        attn_mask: Optional[jax.Array] = None,
+        is_causal: bool = False,
+    ) -> jax.Array:
+        x = x + self.drop_path1(self.norm1(self.attn(
+            x, attn_mask=attn_mask, is_causal=is_causal
+        )))
+        x = x = self.drop_path2(self.norm2(self.mlp(x)))
+        return x
 
 
 def _create_attn(
@@ -406,14 +580,14 @@ def _create_attn(
     rngs: nnx.Rngs,
     **kwargs,
 ) -> nnx.Module:
-
+    
     if isinstance(attn_layer, str):
         attn_layer = ATTN_LAYERS.get(attn_layer, None)
-        assert attn_layer is not None, f"Unknown attn_layer: {attn_layer}"
+        assert attn_layer is not None, f'Unknown attn_layer: {attn_layer}'
 
     # Only pass depth to attention layers that use it
     if issubclass(attn_layer, DiffAttention):
-        kwargs["depth"] = depth
+        kwargs['depth'] = depth
 
     conv_kwargs = dict(
         dtype=dtype,
@@ -425,7 +599,7 @@ def _create_attn(
         norm_param_dtype=norm_param_dtype,
         norm_promote_dtype=norm_promote_dtype,
     )
-
+    
     kwargs.update(conv_kwargs)
     return attn_layer(
         dim,
