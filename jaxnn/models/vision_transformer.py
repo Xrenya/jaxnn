@@ -78,24 +78,6 @@ ATTN_LAYERS = {
 }
 
 
-class PatchEmbed(nnx.Module):
-    def __init__(self):
-        pass
-
-    def __call__(self, x: jax.Array):
-        return x
-
-
-class Block(nnx.Module):
-    def __init__(
-        self,
-    ):
-        pass
-
-    def __call__(self, x: jax.Array):
-        return x
-
-
 class VisionTransformer(nnx.Module):
     """Vision Transformer
 
@@ -189,12 +171,13 @@ class VisionTransformer(nnx.Module):
                 promote_dtype=norm_promote_dtype,
             )(num_features=embed_dim, rngs=rngs, epsilon=1e-6)
         )
+        norm_layer = get_norm_layer(embed_norm_layer)
         embed_norm_layer = wrap_norm_layer(
-                get_norm_layer(embed_norm_layer),
+                norm_layer,
                 dtype=norm_dtype,
                 param_dtype=norm_param_dtype,
                 promote_dtype=norm_promote_dtype,
-            )(num_features=embed_dim, rngs=rngs)
+            )(num_features=embed_dim, rngs=rngs) if norm_layer else None
         act_layer = get_act_layer(act_layer) or nnx.gelu
 
         # Config
@@ -265,6 +248,7 @@ class VisionTransformer(nnx.Module):
             self.patch_drop = PatchDropout(
                 rate=patch_drop_rate,
                 num_prefix_tokens=self.num_prefix_tokens,
+                rngs=rngs,
             )
         else:
             self.patch_drop = Identity()
@@ -306,7 +290,20 @@ class VisionTransformer(nnx.Module):
                 for i in range(depth)
             ]
         )
+        self.feature_info = [
+            dict(module=f"block.{i}", num_chs=embed_dim, reduction=reduction) for i in range(depth)
 
+        ]
+        self.norm = (
+            wrap_norm_layer(
+                norm_layer,
+                dtype=norm_dtype,
+                param_dtype=norm_param_dtype,
+                promote_dtype=norm_promote_dtype,
+            )(num_features=embed_dim, rngs=rngs)
+            if final_norm and not use_fc_norm
+            else Identity()
+        )
 
 # Transoformer Block
 class Block(nnx.Module):
@@ -525,6 +522,7 @@ class ResPostBlock(nnx.Module):
             in_features=dim,
             hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
+            norm_layer=norm_layer if scale_mlp_norm else None,
             bias=proj_bias,
             drop=proj_drop,
             dtype=dtype,
@@ -552,7 +550,7 @@ class ResPostBlock(nnx.Module):
         x = x + self.drop_path1(self.norm1(self.attn(
             x, attn_mask=attn_mask, is_causal=is_causal
         )))
-        x = x = self.drop_path2(self.norm2(self.mlp(x)))
+        x = x + self.drop_path2(self.norm2(self.mlp(x)))
         return x
 
 
