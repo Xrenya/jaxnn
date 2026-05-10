@@ -434,7 +434,7 @@ class Block(nnx.Module):
         x = x + self.drop_path1(self.ls1(self.attn(
             self.norm1(x), attn_mask=attn_mask, is_causal=is_causal
         )))
-        x = x = self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 class ResPostBlock(nnx.Module):
