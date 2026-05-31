@@ -4,6 +4,7 @@ from .pool2d import *
 from .helpers import *
 from .identity import *
 from .attention import *
+from .attention_pool import *
 from .diff_attention import *
 from .pos_embed_sincos import *
 from .mlp import *

@@ -23,7 +23,7 @@ Hacked together by / Copyright 2026, Rinat Shaymukhametov
 
 import math
 from functools import partial
-from typing import Callable, Literal, Optional, Tuple, Type, Union
+from typing import Callable, Literal, Optional, Tuple, Type, Union, Set, Dict, List
 
 import jax
 from flax import nnx
@@ -44,8 +44,8 @@ from jaxnn.layers import (
     Identity,
     Attention,
     DiffAttention,
-    # AttentionPoolLatent,
-    # AttentionPoolPrr,
+    AttentionPoolLatent,
+    AttentionPoolPrr,
     PatchEmbed,
     Mlp,
     PatchDropout,
@@ -400,6 +400,7 @@ class VisionTransformer(nnx.Module):
             norm_promote_dtype=norm_promote_dtype,
             preferred_element_type=preferred_element_type,
         )
+        self.common_kwargs = common_kwargs
 
         assert global_pool in ("", "avg", "avgmax", "max", "token", "map", "prr")
         assert class_token or global_pool != "token"
@@ -561,6 +562,75 @@ class VisionTransformer(nnx.Module):
             if final_norm and not use_fc_norm
             else Identity()
         )
+        
+        # Classifier Head
+        if global_pool == 'map':
+            self.attn_pool = AttentionPoolLatent(
+                self.embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                norm_layer=norm_layer,
+                act_layer=act_layer,
+                **common_kwargs,
+                rngs=rngs,
+            )
+        elif global_pool == 'prr':
+            self.attn_pool = AttentionPoolPrr(
+                self.embed_dim,
+                num_heads=num_heads,
+                pool_type='token' if class_token else 'avg',
+                norm_layer=norm_layer,
+                **common_kwargs,
+                rngs=rngs,
+            )
+            self.pool_include_prefix = True
+        else:
+            self.attn_pool = None
+
+    def no_weight_decay(self) -> Set[str]:
+        """Set of parameters that should not use weight decay."""
+        return {'pos_embed', 'cls_token', 'dist_token'}
+
+    def group_matcher(self, coarse: bool = False) -> Dict[str, Union[str, List]]:
+        """Create regex patterns for parameter grouping.
+
+        Args:
+            coarse: Use coarse grouping.
+
+        Returns:
+            Dictionary mapping group names to regex patterns.
+        """
+        return dict(
+            stem=r'^cls_token|pos_embed|patch_embed',  # stem and embed
+            blocks=[(r'^blocks\.(\d+)', None), (r'^norm', (99999,))]
+        )
+    
+    def get_classifier(self) -> nnx.Module:
+        """Get the classifier head."""
+        return self.head
+
+    def reset_classifier(self, num_classes: int, global_pool: Optional[str] = None) -> None:
+        """Reset the classifier head.
+
+        Args:
+            num_classes: Number of classes for new classifier.
+            global_pool: Global pooling type.
+        """
+        self.num_classes = num_classes
+        if global_pool is not None:
+            assert global_pool in ('', 'avg', 'avgmax', 'max', 'token', 'map', 'prr')
+            if global_pool in ('map', 'prr') and self.attn_pool is None:
+                assert False, "Cannot currently add attention pooling in reset_classifier()."
+            elif global_pool not in ('map', 'prr') and self.attn_pool is not None:
+                self.attn_pool = None  # remove attention pooling
+            elif global_pool in ('map', 'prr') and self.global_pool != global_pool:
+                assert False, "Cannot currently change attention pooling type in reset_classifier()."
+            self.global_pool = global_pool
+        if getattr("head", None):
+            rngs = self.head.rngs
+        else:
+            rngs = self.rngs
+        self.head = nnx.Linear(self.embed_dim, num_classes, **self.common_kwargs, rngs=rngs)
 
 
 def _create_attn(
@@ -619,4 +689,5 @@ def _create_attn(
         proj_drop=proj_drop,
         norm_layer=norm_layer,
         **kwargs,
+        rngs=rngs,
     )
