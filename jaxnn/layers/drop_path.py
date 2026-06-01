@@ -15,7 +15,7 @@ class DropPath(nnx.Module):
         if deterministic or self.rate == 0:
             return x
 
-        if self.p >= 1.0:
+        if self.rate >= 1.0:
             return jnp.zeros_like(x)
 
         keep_prob = 1.0 - self.rate

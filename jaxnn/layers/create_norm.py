@@ -22,7 +22,7 @@ _NORM_LAYER_MAP: Dict[str, Type[nnx.Module]] = {
 def get_norm_layer(norm_layer: Optional[LayerType]):
     if norm_layer is None:
         return None
-    assert isinstance(norm_layer, (type, str, types.FunctionType))
+    assert isinstance(norm_layer, (type, str, types.FunctionType, functools.partial))
     norm_kwrgs = {}
 
     if isinstance(norm_layer, functools.partial):
@@ -33,7 +33,7 @@ def get_norm_layer(norm_layer: Optional[LayerType]):
         if not norm_layer:
             return None
         layer_name = norm_layer.replace("_", "").lower()
-        norm_layer = _NORM_LAYER_MAP(layer_name)
+        norm_layer = _NORM_LAYER_MAP[layer_name]
     else:
         norm_layer = norm_layer
 
