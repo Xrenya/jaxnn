@@ -1,7 +1,7 @@
 """Vision Transformer (ViT) in JAX/Flax NNX."""
 
 from functools import partial
-from typing import Callable, Literal, Optional, Set, Tuple, Type, Union
+from typing import Any, Callable, Dict, Literal, Optional, Set, Tuple, Type, Union
 
 import jax
 import jax.numpy as jnp
@@ -27,7 +27,7 @@ from jaxnn.layers import (
     wrap_norm_layer,
 )
 from jaxnn.models._builder import build_model_with_cfg
-from jaxnn.models._registry import register_model
+from jaxnn.models._registry import generate_default_cfgs, register_model
 
 
 LayerType = Union[str, Callable, Type[nnx.Module]]
@@ -40,6 +40,76 @@ ATTN_LAYERS = {
     "attn": Attention,
     "diff": DiffAttention,
 }
+
+
+def _cfg(url: str = "", **kwargs) -> Dict[str, Any]:
+    return {
+        "url": url,
+        "hf_hub_id": "JaxNN/",
+        "input_size": (224, 224, 3),
+        "fixed_input_size": True,
+        "interpolation": "bicubic",
+        "crop_pct": 0.9,
+        "crop_mode": "center",
+        "mean": (0.5, 0.5, 0.5),
+        "std": (0.5, 0.5, 0.5),
+        "num_classes": 1000,
+        "first_conv": "patch_embed.proj",
+        "classifier": "head",
+        **kwargs,
+    }
+
+
+def _vit_pretrained_cfg(name: str) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    if name.endswith(".dino") or name.endswith(".mae"):
+        kwargs.update(
+            num_classes=0,
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
+    elif name.endswith(".orig_in21k"):
+        kwargs["num_classes"] = 0
+    elif name.endswith(".augreg_in21k"):
+        kwargs["num_classes"] = 21843
+    return _cfg(url=f"https://huggingface.co/JaxNN/{name}", **kwargs)
+
+
+_VIT_PRETRAINED = (
+    "vit_base_patch16_224.orig_in21k_ft_in1k",
+    "vit_base_patch16_224.augreg_in1k",
+    "vit_base_patch32_224.sam_in1k",
+    "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
+    "vit_small_patch16_224.augreg_in1k",
+    "vit_base_patch32_224.augreg_in21k",
+    "vit_base_patch16_224.dino",
+    "vit_large_patch32_224.orig_in21k",
+    "vit_base_patch32_224.orig_in21k",
+    "vit_base_patch16_224.augreg_in21k",
+    "vit_large_patch16_224.augreg_in21k_ft_in1k",
+    "vit_base_patch16_224.augreg_in21k_ft_in1k",
+    "vit_tiny_patch16_224.augreg_in21k",
+    "vit_base_patch16_224.mae",
+    "vit_small_patch16_224.augreg_in21k_ft_in1k",
+    "vit_small_patch16_224.augreg_in21k",
+    "vit_large_patch16_224.orig_in21k",
+    "vit_base_patch16_224.orig_in21k",
+    "vit_base_patch32_224.augreg_in21k_ft_in1k",
+    "vit_base_patch16_224.sam_in1k",
+    "vit_base_patch32_224.augreg_in1k",
+    "vit_small_patch16_224.dino",
+    "vit_large_patch16_224.mae",
+    "vit_base_patch16_224.augreg2_in21k_ft_in1k",
+    "vit_large_patch16_224.augreg_in21k",
+)
+
+
+default_cfgs = generate_default_cfgs(
+    {
+        name: _vit_pretrained_cfg(name)
+        for name in _VIT_PRETRAINED
+    }
+)
 
 
 def _resolve_norm_layer(norm_layer: Optional[LayerType]) -> Callable:

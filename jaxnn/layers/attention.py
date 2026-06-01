@@ -306,9 +306,9 @@ class Attention(nnx.Module):
         # fused attention; scale is handled internally
         if self.fused_attn:
             x = nnx.dot_product_attention(
-                query=q,
-                key=k,
-                value=v,
+                query=q.transpose(0, 2, 1, 3),
+                key=k.transpose(0, 2, 1, 3),
+                value=v.transpose(0, 2, 1, 3),
                 bias=None,
                 mask=attn_mask,
                 broadcast_dropout=True,
@@ -323,6 +323,7 @@ class Attention(nnx.Module):
                     "promote_dtype", flax_dtypes.promote_dtype
                 ),
             )
+            x = x.reshape(B, N, self.attn_dim)
         else:
             q = q * self.scale
             attn = jnp.einsum("bhnd,bhmd->bhnm", q, k)  # JAX-style matmul
@@ -331,8 +332,7 @@ class Attention(nnx.Module):
             attn = jax.nn.softmax(attn, axis=-1)
             attn = self.attn_drop(attn, deterministic=deterministic)
             x = jnp.einsum("bhnm,bhmd->bhnd", attn, v)
-        # (B, num_heads, N, head_dim) -> (B, N, attn_dim)
-        x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
+            x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
 
         x = self.norm(x)
         x = self.proj(x)
@@ -587,9 +587,9 @@ class AttentionRope(nnx.Module):
 
         if self.fused_attn:
             x = nnx.dot_product_attention(
-                query=q,
-                key=k,
-                value=v,
+                query=q.transpose(0, 2, 1, 3),
+                key=k.transpose(0, 2, 1, 3),
+                value=v.transpose(0, 2, 1, 3),
                 bias=None,
                 mask=attn_mask,
                 broadcast_dropout=True,
@@ -604,6 +604,7 @@ class AttentionRope(nnx.Module):
                     "promote_dtype", flax_dtypes.promote_dtype
                 ),
             )
+            x = x.reshape(B, N, self.attn_dim)
         else:
             q = q * self.scale
             attn = jnp.einsum("bhnd,bhmd->bhnm", q, k)  # JAX-style matmul
@@ -612,8 +613,7 @@ class AttentionRope(nnx.Module):
             attn = jax.nn.softmax(attn, axis=-1)
             attn = self.attn_drop(attn, deterministic=deterministic)
             x = jnp.einsum("bhnm,bhmd->bhnd", attn, v)
-        # (B, num_heads, N, head_dim) -> (B, N, attn_dim)
-        x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
+            x = x.transpose(0, 2, 1, 3).reshape(B, N, self.attn_dim)
 
         x = self.norm(x)
         x = self.proj(x)
