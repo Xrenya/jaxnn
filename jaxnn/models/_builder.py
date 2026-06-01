@@ -22,7 +22,6 @@ _CHECK_HASH = False
 __all__ = [
     "set_pretrained_download_progress",
     "set_pretrained_check_hash",
-    "load_custom_pretrained",
     "load_pretrained",
     "pretrained_cfg_for_features",
     "resolve_pretrained_cfg",
@@ -128,6 +127,7 @@ def _merge_checkpoint_cfg(
 
     # Always point load_pretrained to the local directory
     overlay["local_dir"] = str(checkpoint_path)
+    overlay["hf_hub_id"] = None
 
     # Filter to only keys that PretrainedCfg actually accepts
     valid_fields = {f.name for f in dataclasses.fields(PretrainedCfg)}
@@ -178,41 +178,6 @@ def pretrained_cfg_for_features(pretrained_cfg: Dict[str, Any]) -> Dict[str, Any
     for tr in to_remove:
         pretrained_cfg.pop(tr, None)
     return pretrained_cfg
-
-
-def load_custom_pretrained(
-    model: nnx.Module,
-    pretrained_cfg: Optional[Dict[str, Any]] = None,
-    cache_dir: Optional[Union[str, Path]] = None,
-) -> None:
-    pretrained_cfg = pretrained_cfg or getattr(model, "pretrained_cfg", None)
-    if not pretrained_cfg:
-        _logger.warning("No pretrained config found for custom load.")
-        return
-
-    source, location = _resolve_pretrained_source(pretrained_cfg)
-    if source is None:
-        _logger.warning("No pretrained source found for custom load.")
-        return
-
-    if source == "hf-hub":
-        location = str(
-            load_state_path_from_hf(
-                location,
-                cache_dir=cache_dir,
-                revision=pretrained_cfg.get("hf_hub_revision"),
-            )
-        )
-    elif source == "local-dir":
-        pass
-    else:
-        _logger.warning("Custom load does not support source '%s'.", source)
-        return
-
-    if hasattr(model, "load_pretrained"):
-        model.load_pretrained(location)
-    else:
-        _logger.warning("Model does not implement load_pretrained().")
 
 
 def _filter_kwargs(kwargs: Dict[str, Any], names: List[str]) -> None:
@@ -269,7 +234,10 @@ def _resolve_pretrained_source(cfg: dict) -> Tuple[Optional[str], Any]:
         p = Path(local_dir)
         if p.exists():
             return "local-dir", str(p)
-        _logger.warning("local_dir '%s' does not exist — falling back.", local_dir)
+        raise FileNotFoundError(
+            f"checkpoint_path '{local_dir}' does not exist. "
+            f"Check the path and try again."
+        )
 
     # Legacy local-path keys
     for key in ("file", "folder"):
@@ -424,9 +392,10 @@ def _apply_flat_state_dict(
 
     model_keys = set(leaves.keys())
     loaded_keys = set(flat_dict)
+    rng_keys = {k for k in model_keys | loaded_keys if ".rngs." in k or k.startswith("rngs.")}
 
-    missing = sorted(model_keys - loaded_keys)
-    unexpected = sorted(loaded_keys - model_keys)
+    missing = sorted((model_keys - loaded_keys) - rng_keys)
+    unexpected = sorted((loaded_keys - model_keys) - rng_keys)
 
     if strict and (missing or unexpected):
         msgs: List[str] = []
@@ -451,7 +420,7 @@ def _apply_flat_state_dict(
             shape_mismatches.append(key)
             continue
 
-        var_state.value = arr
+        var_state.raw_value = arr
 
     nnx.update(model, state)
 
@@ -513,9 +482,6 @@ def load_pretrained(
 
     elif source == "local-dir":
         _logger.info("Loading pretrained weights from %s", location)
-        if pretrained_cfg.get("custom_load", False):
-            model.load_pretrained(location)
-            return
         state_dict, _ = load_orbax_state_dict(location)
 
     elif source == "hf-hub":
@@ -525,9 +491,6 @@ def load_pretrained(
             cache_dir=cache_dir,
             revision=pretrained_cfg.get("hf_hub_revision"),
         )
-        if pretrained_cfg.get("custom_load", False):
-            model.load_pretrained(str(local))
-            return
         state_dict, _ = load_orbax_state_dict(local)
 
     else:
@@ -634,28 +597,38 @@ def build_model_with_cfg(
     elif pretrained and resolved_cfg.hf_hub_id:
         try:
             from jaxnn.models._hub import load_model_config_from_hf
+
             hub_pcfg, _, _ = load_model_config_from_hf(
                 resolved_cfg.hf_hub_id, cache_dir=cache_dir
             )
             hub_fields = {
-                k: v for k, v in hub_pcfg.items()
+                k: v
+                for k, v in hub_pcfg.items()
                 if k not in ("hf_hub_id", "source", "architecture")
             }
             import dataclasses
+
             valid = {f.name for f in dataclasses.fields(resolved_cfg)}
             hub_fields = {k: v for k, v in hub_fields.items() if k in valid}
             # Apply hub fields first, then any explicit overlay on top
             resolved_cfg = dataclasses.replace(resolved_cfg, **hub_fields)
             if pretrained_cfg_overlay:
-                resolved_cfg = dataclasses.replace(resolved_cfg, **{
-                    k: v for k, v in pretrained_cfg_overlay.items() if k in valid
-                })
+                resolved_cfg = dataclasses.replace(
+                    resolved_cfg,
+                    **{k: v for k, v in pretrained_cfg_overlay.items() if k in valid},
+                )
         except Exception as e:
             _logger.warning(
                 "Could not read config.json from Hub (%s): %s — using registry cfg.",
-                resolved_cfg.hf_hub_id, e,
+                resolved_cfg.hf_hub_id,
+                e,
             )
     pretrained_cfg_dict = resolved_cfg.to_dict()
+    if checkpoint_path is not None:
+        pretrained_cfg_dict["local_dir"] = str(checkpoint_path)
+        pretrained_cfg_dict["hf_hub_id"] = None
+    for k, v in (pretrained_cfg_dict.get("model_args") or {}).items():
+        kwargs[k] = v
 
     seed = pretrained_cfg_dict.get("rngs", 0)
     rngs = dict(rngs=nnx.Rngs(seed))
@@ -684,7 +657,8 @@ def build_model_with_cfg(
         _logger.warning("Pruned model loading is not yet implemented for Flax/JAX")
 
     num_classes_pretrained = (
-        0 if features
+        0
+        if features
         else getattr(model, "num_classes", kwargs.get("num_classes", 1000))
     )
 

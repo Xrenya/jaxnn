@@ -111,6 +111,9 @@ class ImagenetEvalTransform:
         if isinstance(input_size, int):
             self.crop_h = self.crop_w = input_size
         else:
+            # Strip last channel dim if HWC tuple e.g. (224, 224, 3) from data_config
+            if len(input_size) == 3:
+                input_size = input_size[:-1]
             self.crop_h, self.crop_w = int(input_size[0]), int(input_size[1])
 
         self.interpolation = interpolation
@@ -146,23 +149,28 @@ class ImagenetEvalTransform:
 
         else:
             # center mode (default)
-            if self._square:
-                # Resize(int) => torchvision shorter-edge resize
-                # Resize(scale_size) + CenterCrop(img_size)
+            if self._square and crop_pct != 1.0:
+                # Standard path: shorter-edge resize, then center crop
                 resize = Resize(self.scale_h, interpolation=tv_interp, antialias=True)
+                self._spatial = Compose(
+                    [resize, CenterCrop((self.crop_h, self.crop_w))]
+                )
+            elif crop_pct == 1.0:
+                # crop_pct=1.0: scale_size == crop_size, so Resize directly to target.
+                # No crop needed - timm does a direct fixed-size resize (both axes),
+                # equivalent to squash but via the center path.
+                self._spatial = Resize(
+                    (self.crop_h, self.crop_w), interpolation=tv_interp, antialias=True
+                )
             else:
-                # Resize((H,W)) => fixed two-axis resize, then crop
                 resize = Resize(
                     (self.scale_h, self.scale_w),
                     interpolation=tv_interp,
                     antialias=True,
                 )
-            self._spatial = Compose(
-                [
-                    resize,
-                    CenterCrop((self.crop_h, self.crop_w)),
-                ]
-            )
+                self._spatial = Compose(
+                    [resize, CenterCrop((self.crop_h, self.crop_w))]
+                )
 
     def __call__(self, img: Union[Image.Image, np.ndarray]) -> np.ndarray:
         """Apply eval transform.

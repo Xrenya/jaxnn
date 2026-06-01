@@ -3,11 +3,15 @@
 Hacked together by / Copyright 2026 Rinat Shaymukhametov
 """
 
+import functools
 import logging
-from typing import Any, Callable, Dict, Optional, Union, List, Tuple
+from typing import Any, Callable, Dict, Optional, Union, List, Tuple, Type
 from pathlib import Path
 
 from flax import nnx
+from flax.typing import Dtype, PromoteDtypeFn
+from flax.nnx.nn import dtypes as flax_dtypes
+import jax.numpy as jnp
 
 from jaxnn.models._builder import load_orbax_state_dict, _apply_flat_state_dict
 

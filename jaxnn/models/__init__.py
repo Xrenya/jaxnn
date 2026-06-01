@@ -1,4 +1,5 @@
-from .resnet import ResNet as ResNet, BasicBlock as BasicBlock, Bottleneck as Bottleneck
+from .resnet import ResNet, BasicBlock, Bottleneck
+from .vision_transformer import VisionTransformer
 
 from ._pretrained import (
     PretrainedCfg as PretrainedCfg,

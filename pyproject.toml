@@ -9,7 +9,7 @@ description = "Foundation models in JAX/Flax"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Shaymukhametov Rinat", email = "shaymukhametov.rinat.ml@gmail.com" }]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 keywords = ["jax", "flax", "deep-learning", "computer-vision", "resnet"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -17,6 +17,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -26,11 +27,12 @@ dependencies = [
     "jax>=0.9.0",
     "flax>=0.12.3",
     "orbax-checkpoint>=0.11.32",
-    "Pillow>=12.1.1",
+    "Pillow>=8,<12",
     "numpy>=1.26.0",
     "huggingface-hub>=1.4.1",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
+    "einops>=0.8.2",
 ]
 
 [project.optional-dependencies]

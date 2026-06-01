@@ -68,6 +68,7 @@ _model_with_tags: Dict[str, List[str]] = defaultdict(
 
 def split_model_name_tag(model_name: str, no_tag: str = "") -> Dict[str, str]:
     model_name, *tag_list = model_name.split(".", 1)
+    model_name = model_name.split("/")[-1] if "/" in model_name else model_name
     tag = tag_list[0] if tag_list else no_tag
     return {"model_name": model_name, "tag": tag}
 

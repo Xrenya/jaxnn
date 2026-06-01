@@ -98,7 +98,7 @@ def _build_data_cfg(
         input_size=(img_h, img_w),
         interpolation=cfg.get("interpolation", "bicubic"),
         mean=tuple(cfg.get("mean", IMAGENET_DEFAULT_MEAN)),
-        std=tuple(cfg.get("std",  IMAGENET_DEFAULT_STD)),
+        std=tuple(cfg.get("std", IMAGENET_DEFAULT_STD)),
         crop_pct=crop_pct,
         crop_mode=cfg.get("crop_mode", DEFAULT_CROP_MODE),
     )
