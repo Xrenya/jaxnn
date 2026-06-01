@@ -595,11 +595,10 @@ def build_model_with_cfg(
     if checkpoint_path is not None:
         resolved_cfg = _merge_checkpoint_cfg(resolved_cfg, checkpoint_path)
     elif pretrained and resolved_cfg.hf_hub_id:
-        hub_model_args = {}
         try:
             from jaxnn.models._hub import load_model_config_from_hf
 
-            hub_pcfg, _, hub_model_args = load_model_config_from_hf(
+            hub_pcfg, _, _ = load_model_config_from_hf(
                 resolved_cfg.hf_hub_id, cache_dir=cache_dir
             )
             hub_fields = {
@@ -625,8 +624,6 @@ def build_model_with_cfg(
                 e,
             )
     pretrained_cfg_dict = resolved_cfg.to_dict()
-    if checkpoint_path is None and pretrained and resolved_cfg.hf_hub_id and hub_model_args:
-        pretrained_cfg_dict["model_args"] = hub_model_args
     if checkpoint_path is not None:
         pretrained_cfg_dict["local_dir"] = str(checkpoint_path)
         pretrained_cfg_dict["hf_hub_id"] = None
