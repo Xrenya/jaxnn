@@ -1,4 +1,25 @@
-"""Vision Transformer (ViT) in JAX/Flax NNX."""
+"""Vision Transformer (ViT) in JAX/Flax.
+
+A JAX implementation of Vision Transformers as described in:
+
+"An Image Is Worth 16 x 16 Words: Transformers for Image Recognition at Scale"
+    https://arxiv.org/abs/2010.11929
+
+"How to Train Your ViT? Data, Augmentation, and Regularization in Vision Transformers"
+    https://arxiv.org/abs/2106.10270
+
+"FlexiViT: One Model for All Patch Sizes"
+    https://arxiv.org/abs/2212.08013
+
+The official JAX code is released and available at:
+    https://github.com/google-research/vision_transformer
+    https://github.com/google-research/big_vision
+
+Adapted from PyTorch/timm's Vision Transformer implementation.
+Copyright of original work: 2019 Ross Wightman
+
+Copyright 2026 Rinat Shaymukhametov
+"""
 
 from functools import partial
 from typing import Any, Callable, Dict, Literal, Optional, Set, Tuple, Type, Union
