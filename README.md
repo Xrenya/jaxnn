@@ -218,7 +218,7 @@ The data in table for `img/sec` is given for PyTorch. The output tensor (logits)
 
 | Component | Status |
 |---|---|
-| ViT, MobileNet, and more | ⏳ |
+| MobileNet, and more | ⏳ |
 | Training/eval loop with `optax` | ⏳ |
 | Documentation | ⏳ |
 
